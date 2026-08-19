@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "modules": [
+    {
+      "name": "todo",
+      "version": "0.1.0",
+      "purpose": "待办提醒：按到期时刻推送提醒，支持内置数据源与 Obsidian 库",
+      "data_sources": ["internal", "vault"],
+      "files": ["module.json", "todo_worker.py", "规范.md", "agents.md", "README.md", "tests/"],
+      "requires": {"python": ">=3.11"}
+    }
+  ]
+}
