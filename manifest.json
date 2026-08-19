@@ -5,9 +5,22 @@
       "name": "todo",
       "version": "0.1.0",
       "purpose": "待办提醒：按到期时刻推送提醒，支持内置数据源与 Obsidian 库",
-      "data_sources": ["internal", "vault"],
-      "files": ["module.json", "todo_worker.py", "规范.md", "agents.md", "README.md", "tests/"],
-      "requires": {"python": ">=3.11"}
+      "data_sources": [
+        "internal",
+        "vault"
+      ],
+      "files": [
+        "module.json",
+        "todo_worker.py",
+        "规范.md",
+        "agents.md",
+        "README.md",
+        "tests/"
+      ],
+      "requires": {
+        "python": ">=3.11"
+      },
+      "sha256": "3a70215769db8f42a8c6b3b82c7867075db4073641a7300dafc5a6a9b5e5fb71"
     }
   ]
 }
