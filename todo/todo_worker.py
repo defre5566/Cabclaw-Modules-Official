@@ -21,13 +21,15 @@ from common import (  # noqa: E402
     load_token,
     post_push,
     log_event,
-    scan_md_tasks,
 )
+from task import scan_md_tasks  # noqa: E402  # Obsidian 私有解析器（模块自带）
 from bridge.config import resolve_path  # noqa: E402
 
-MODULE_DIR = Path(__file__).resolve().parent
-SENT_FILE = MODULE_DIR / "todo_sent.json"
-TASKS_DIR = MODULE_DIR / "tasks"
+MODULE_DIR = Path(__file__).resolve().parent          # modules/<name>/（代码）
+DATA_DIR = MODULE_DIR.parent / "modules_data" / "todo"  # modules/modules_data/<name>/（用户数据）
+SENT_FILE = DATA_DIR / "todo_sent.json"
+TASKS_DIR = DATA_DIR / "tasks"
+SETTINGS_FILE = DATA_DIR / "settings.json"
 SHARED_NAME = "tasks"
 
 DEFAULT_TAGS = ["工作", "学习", "生活", "家庭", "购物", "健康", "娱乐"]
@@ -42,12 +44,12 @@ DEFAULT_SETTINGS = {
 
 
 def _settings() -> dict:
-    """读 module.json settings（缺键兜底默认）。"""
+    """读数据区 settings.json（用户配置，缺键兜底默认）；module.json 只存声明不存值。"""
     s = dict(DEFAULT_SETTINGS)
     try:
-        data = json.loads((MODULE_DIR / "module.json").read_text(encoding="utf-8"))
-        if isinstance(data, dict) and isinstance(data.get("settings"), dict):
-            s.update(data["settings"])
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            s.update(data)
     except Exception:
         pass
     return s

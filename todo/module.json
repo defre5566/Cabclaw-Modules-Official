@@ -10,7 +10,7 @@
   "settings_schema": [
     {
       "section": "数据源",
-      "desc": "内置数据源 = 模块自管 JSON（modules/todo/tasks/，agent 维护，推荐）；Obsidian = 扫描你的库目录下所有 .md 的 Tasks 任务行，带日期标注（📅）的才算待办，⏰ 时间标记为本产品扩展（Tasks 原生无时间字段）。单数据源，切换不迁移旧数据。",
+      "desc": "内置数据源 = 模块自管 JSON（modules/modules_data/todo/tasks/，agent 维护，推荐）；Obsidian = 扫描你的库目录下所有 .md 的 Tasks 任务行，带日期标注（📅）的才算待办，⏰ 时间标记为本产品扩展（Tasks 原生无时间字段）。单数据源，切换不迁移旧数据。",
       "fields": [
         {"key": "data_source", "type": "select",
          "options": [{"value": "internal", "label": "内置数据源"},
@@ -39,13 +39,5 @@
          "show_when": {"data_source": "vault"}}
       ]
     }
-  ],
-  "settings": {
-    "data_source": "internal",
-    "vault_path": "",
-    "tags_vocab": ["工作", "学习", "生活", "家庭", "购物", "健康", "娱乐"],
-    "allow_new_tag": false,
-    "extract_tags": true,
-    "tag_prefix": ""
-  }
+  ]
 }
