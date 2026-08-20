@@ -63,6 +63,17 @@ def test_load_internal_basic_and_dedup():
     assert len(tasks) == 1
 
 
+def test_load_internal_done_at_preserved():
+    """done_at 字段透传（internal 完成时间戳）；旧数据缺省 None。"""
+    tmp = Path(tempfile.mkdtemp())
+    _mk(tmp)
+    _write([_task("a", TODAY.isoformat(), done=True, done_at=f"{TODAY}T09:30:00"),
+            _task("b", TODAY.isoformat(), done=True)])  # 旧数据无 done_at
+    tasks = {t["id"]: t for t in tw.load_internal()}
+    assert tasks["a"]["done_at"] == f"{TODAY}T09:30:00"
+    assert tasks["b"]["done_at"] is None
+
+
 def test_load_internal_bad_json_tolerated():
     tmp = Path(tempfile.mkdtemp())
     _mk(tmp)
@@ -184,6 +195,23 @@ def test_vault_due_only_and_tags():
     by_text = {t["text"]: t for t in tasks}
     assert by_text["买菜"]["remind_min"] == 15 and by_text["买菜"]["tags"] == ["生活"]
     assert by_text["明天的事"]["tags"] == ["工作"]
+
+
+def test_vault_done_at_from_tasks_done_mark():
+    """vault 模式：✅ YYYY-MM-DD（Tasks 语法）→ done_at 日期粒度 + done=true。"""
+    tmp = Path(tempfile.mkdtemp())
+    _mk(tmp)
+    vault = tmp / "vault"
+    vault.mkdir()
+    (vault / "n.md").write_text(
+        f"- [ ] 写完周报 📅 {TODAY} ⏰ 18:00\n"
+        f"- [x] 已完成任务 📅 {TODAY} ✅ {TODAY}\n"
+    )
+    tasks = tw.load_vault({"vault_path": str(vault), "tag_prefix": "#todo/", "extract_tags": True})
+    by_text = {t["text"]: t for t in tasks}
+    assert by_text["已完成任务"]["done"] is True
+    assert by_text["已完成任务"]["done_at"] == TODAY.isoformat()   # vault 只有日期粒度
+    assert by_text["写完周报"]["done_at"] is None
 
 
 def test_vault_tag_prefix_empty_not_extract():

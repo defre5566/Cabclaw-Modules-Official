@@ -1,0 +1,40 @@
+{
+  "name": "Planner",
+  "purpose": "早晚报聚合模块（晨间早报 + 晚间复盘）：聚合任务/天气/节假日/倒计时/简报，agent 加工成口语化文案",
+  "spec": "规范.md",
+  "enabled": false,
+  "schedule_from_settings": [
+    {"phase": "morning", "time_field": "morning_time", "enabled_field": "planner_on"},
+    {"phase": "evening", "time_field": "evening_time", "enabled_field": "planner_on"}
+  ],
+  "job_template": "job.template.json",
+  "retry": {"interval_seconds": 900, "max": 3},
+  "settings_schema": [
+    {
+      "section": "早晚报",
+      "desc": "总开关与推送时刻。关闭总开关后早晚报都不推送；晚报可单独关闭。",
+      "fields": [
+        {"key": "planner_on", "type": "boolean", "default": true, "desc": "早晚报总开关（关闭后早晚报都不推送）"},
+        {"key": "morning_time", "type": "string", "default": "08:30", "desc": "早报推送时刻（HH:MM）"},
+        {"key": "evening_on", "type": "boolean", "default": true, "desc": "晚报独立开关（可单独关闭晚间复盘）"},
+        {"key": "evening_time", "type": "string", "default": "21:00", "desc": "晚报推送时刻（HH:MM）"}
+      ]
+    },
+    {
+      "section": "信息简报",
+      "desc": "简报 = 每日按所选方向生成 HTML 信息简报（早报时刻前 5 分钟自动生成；早报附要点与原文文件）。预设方向只读，自定义方向在网页导入。",
+      "fields": [
+        {"key": "briefing_on", "type": "boolean", "default": false, "desc": "简报开关（关闭后简报不生成、早报不带简报段）"},
+        {"key": "briefing_topics", "type": "choice", "max": 3, "default": ["热点"], "desc": "简报方向（最多 3 个）"}
+      ]
+    },
+    {
+      "section": "地方性数据",
+      "desc": "花粉/台风按你的位置自动显示（内蒙古显示花粉开关，沿海省份显示台风开关）。",
+      "fields": [
+        {"key": "pollen_on", "type": "boolean", "default": false, "desc": "花粉浓度开关（仅内蒙古生效）", "show_when_service": "pollen"},
+        {"key": "typhoon_on", "type": "boolean", "default": false, "desc": "台风动态开关（仅沿海省份生效）", "show_when_service": "typhoon"}
+      ]
+    }
+  ]
+}

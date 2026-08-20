@@ -1,0 +1,10 @@
+{
+  "name": "早报简报",
+  "title": "早报简报",
+  "slug": "morning-briefing",
+  "phase": "morning",
+  "offset_min": 5,
+  "timeoutSeconds": 1800,
+  "output_dir": "briefing",
+  "fallback_prompt": "生成一份通用信息简报（HTML），标题含日期，内容含要点/评论解读/延伸关注三段，500-1000 字，每条带来源标注。"
+}

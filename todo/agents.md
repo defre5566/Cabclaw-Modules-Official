@@ -22,8 +22,14 @@
 
 ## 勾选完成
 
-- 单次任务：`done = true`
-- 重复任务（有 `repeat`）：把今天 `YYYY-MM-DD` **追加进 `done_dates`**（不要置 done）
+- **internal 模式**（JSON）：
+  - 单次任务：`done = true` + **`done_at = 当前时间戳`**（ISO 格式 `YYYY-MM-DDTHH:MM:SS`，如 `2026-08-21T09:30:00`）
+  - 重复任务（有 `repeat`）：把今天 `YYYY-MM-DD` **追加进 `done_dates`**（不要置 done，不要写 done_at）
+  - 注意：`done_at` 是完成时刻记录，Planner 晚报据此判断"今日完成了什么"——**必须写**
+- **vault 模式**（Obsidian，Tasks 插件语法）：
+  - 在任务行尾追加完成标记 `✅ YYYY-MM-DD`（Tasks 插件标准语法，如 `- [x] 写周报 📅 2026-08-21 ✅ 2026-08-21`）
+  - 读取时任务解析器按 `✅` 识别完成日期；Tasks 语法无时间戳字段，vault 模式只有日期粒度
+  - 重复任务（行内有 🔁）：同样追加 `✅ 今天日期`，不要删除或改写其他字段
 
 ## 查任务
 

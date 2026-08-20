@@ -20,7 +20,30 @@
       "requires": {
         "python": ">=3.11"
       },
-      "sha256": "f504073e417a10cb20da161ae95cd8992d501a71ed8b83c7c71e4033cebbfbc9"
+      "sha256": "ad2c8ac8d0527fd1f9c64d04d5f9e46b7ee1bca66ee47b2348eb86921bd218e4"
+    },
+    {
+      "name": "Planner",
+      "version": "0.1.0",
+      "purpose": "早晚报聚合模块（晨间早报 + 晚间复盘）",
+      "data_sources": [
+        "shared"
+      ],
+      "files": [
+        "module.json",
+        "planner_worker.py",
+        "规范.md",
+        "agents.md",
+        "README.md",
+        "directions.json",
+        "job.template.json",
+        "prompts/",
+        "tests/"
+      ],
+      "requires": {
+        "python": ">=3.11"
+      },
+      "sha256": "f3478eedadf6ff3561d5e1c59d2d095c0566cf345603caeb838bf3a6a3adb746"
     }
   ]
 }

@@ -70,6 +70,7 @@ def _norm_task(t: dict) -> dict | None:
         "time": t.get("time") or None,
         "remind_min": t.get("remind_min"),
         "done": bool(t.get("done", False)),
+        "done_at": t.get("done_at") or None,   # 完成时间戳（ISO "YYYY-MM-DDTHH:MM:SS"；旧数据 None）
         "repeat": t.get("repeat"),
         "done_dates": list(t.get("done_dates") or []),
         "tags": list(t.get("tags") or []),
@@ -113,6 +114,7 @@ def _from_parsed(pt) -> dict:
         "time": pt.time.strftime("%H:%M") if pt.time else None,
         "remind_min": pt.remind_min,
         "done": bool(pt.done_date),
+        "done_at": pt.done_date.isoformat() if pt.done_date else None,  # vault 只有日期粒度
         "repeat": None,
         "done_dates": [pt.done_date.isoformat()] if pt.done_date else [],
         "tags": list(pt.tags or []),
