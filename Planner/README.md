@@ -34,9 +34,16 @@
 ## 依赖
 
 - 宿主平台（wechat-claw）：common 公共库（weather/calendar/holidays/localdata/io/push）
-- todo 模块（可选，任务数据源）；opencode scheduler（可选，简报 job 定时生产）
+- todo 模块（可选，任务数据源）；opencode scheduler（简报 job 由 register 保存设置时**自动登记**，无需手动部署）
 - skills（简报基底要求）：微信公众号检索（重点）> Exa > websearch
+
+## 版本与更新
+
+- 版本：源 manifest 声明（`version`），安装/更新时记录到 `modules_data/Planner/installed.json`
+- 自动更新：每日定时（config `update.check_time`）指纹驱动——源有变化即更新，**静默**（不推送，日志可见）
+- 模块级开关：web 模块设置**标题栏胶囊**"自动更新"（关闭后该模块不自动更新，仍可手动）
+- 更新安全：sha256 校验（坏包拒收）+ .bak 备份（失败恢复）+ **token 与数据区不碰**（settings/倒计时/简报/自定义 prompt 全保留）
 
 ## 设计规格
 
-见模块源仓库 `docs/Planner-设计规格.md`。
+见模块源仓库 `docs/Planner-设计规格.md`（设计决策与完整规格，随模块源版本管理）。
