@@ -159,19 +159,30 @@ def test_no_time_task_not_reminded():
 
 # ---------- dry-run 零副作用 / 共享刷新 ----------
 
-def test_dry_run_zero_side_effect():
+def _fixed_now(monkeypatch, hour: int = 20, minute: int = 0):
+    """打桩 worker 的 datetime.now（消除时间敏感：任何真实时刻都能测）。"""
+    class FakeDT(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 8, 21, hour, minute)
+    monkeypatch.setattr(tw, "datetime", FakeDT)
+
+
+def test_dry_run_zero_side_effect(monkeypatch):
     tmp = Path(tempfile.mkdtemp())
     ctx = _mk(tmp)
     _write([_task("a", TODAY.isoformat(), "14:00")])
+    _fixed_now(monkeypatch)
     assert tw.main(["--dry-run"]) == 0
     assert not tw.SENT_FILE.exists()       # 不写防重
     assert not ctx["shared"]               # 不刷共享
 
 
-def test_run_refresh_shared_and_sent():
+def test_run_refresh_shared_and_sent(monkeypatch):
     tmp = Path(tempfile.mkdtemp())
     ctx = _mk(tmp)
     _write([_task("a", TODAY.isoformat(), "14:00")])
+    _fixed_now(monkeypatch)
     assert tw.main([]) == 0
     assert tw.SENT_FILE.exists()           # 记防重
     assert ctx["shared"] and ctx["shared"][-1][0] == "tasks"  # 刷共享

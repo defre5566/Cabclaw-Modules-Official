@@ -20,7 +20,7 @@
       "requires": {
         "python": ">=3.11"
       },
-      "sha256": "ad2c8ac8d0527fd1f9c64d04d5f9e46b7ee1bca66ee47b2348eb86921bd218e4"
+      "sha256": "1466cadc71815668dd9c2ce13d1ae5e7128ca123e7e185d14bcac637d1bcb837"
     },
     {
       "name": "Planner",
@@ -43,7 +43,7 @@
       "requires": {
         "python": ">=3.11"
       },
-      "sha256": "f3478eedadf6ff3561d5e1c59d2d095c0566cf345603caeb838bf3a6a3adb746"
+      "sha256": "34320b5880588a9b136253ef39f46894df6224c0085d8633cf1439632a24d53e"
     }
   ]
 }
