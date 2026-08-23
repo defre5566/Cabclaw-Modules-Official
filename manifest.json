@@ -15,12 +15,13 @@
         "规范.md",
         "agents.md",
         "README.md",
-        "tests/"
+        "tests/",
+        "task.py"
       ],
       "requires": {
         "python": ">=3.11"
       },
-      "sha256": "1466cadc71815668dd9c2ce13d1ae5e7128ca123e7e185d14bcac637d1bcb837"
+      "sha256": "fc9831126f067503f8279fd0c8ab440446db96bf5321cb3a56451c730a265ffb"
     },
     {
       "name": "Planner",
@@ -43,7 +44,7 @@
       "requires": {
         "python": ">=3.11"
       },
-      "sha256": "ad01f5b252fde38192902194706bd96467827b280809d9116c70746bbae567e5"
+      "sha256": "4d246219590f112e76c4c1a804e010f8188c22aba7ec314e7aebe3f5a40e64ce"
     }
   ]
 }
