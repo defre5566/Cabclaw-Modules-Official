@@ -1,0 +1,4 @@
+# wechat-claw 模块源：全库按二进制处理，禁止任何换行转换。
+# manifest.json 是 Ed25519 签名对象（作者以 LF 字节签名）；模块文件 sha256 亦按原字节计算。
+# Windows 部署机 core.autocrlf=true 会把文本检出为 CRLF 导致验签/哈希失败——此文件强制 LF。
+* -text
