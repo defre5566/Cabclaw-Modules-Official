@@ -34,6 +34,7 @@ from common import (  # noqa: E402
     weather_alerts,
     get_lunar,
     get_fufu,
+    get_jiujiu,
     is_holiday,
     get_location,
 )
@@ -71,17 +72,18 @@ DEFAULT_SETTINGS = {
 }
 
 
-def _settings() -> dict:
-    """读数据区 settings.json（缺键兜底默认）。"""
+def _settings() -> tuple[dict, bool]:
+    """读数据区 settings.json；坏则用默认 + 返回 corrupt=True（P8：降级 + 早报内附带提示）。"""
     s = dict(DEFAULT_SETTINGS)
     try:
         import json
         data = json.loads((DATA_DIR / "settings.json").read_text(encoding="utf-8"))
         if isinstance(data, dict):
             s.update(data)
-    except Exception:
-        pass
-    return s
+        return s, False
+    except Exception as e:
+        log_event("WARN", "Planner", "settings_read_fail", f"{DATA_DIR / 'settings.json'}: {e}")
+        return s, True
 
 
 # ---------- 任务数据（todo shared） ----------
@@ -155,7 +157,8 @@ def _load_countdown() -> list[dict]:
         import json
         data = json.loads(COUNTDOWN_FILE.read_text(encoding="utf-8"))
         return data.get("entries", []) if isinstance(data, dict) else []
-    except Exception:
+    except Exception as e:
+        log_event("WARN", "Planner", "countdown_read_fail", f"{COUNTDOWN_FILE}: {e}")
         return []
 
 
@@ -167,7 +170,8 @@ def _save_countdown(entries: list[dict]) -> bool:
         tmp.write_text(json.dumps({"entries": entries}, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(COUNTDOWN_FILE)
         return True
-    except Exception:
+    except Exception as e:
+        log_event("WARN", "Planner", "countdown_save_fail", f"{COUNTDOWN_FILE}: {e}")
         return False
 
 
@@ -220,8 +224,47 @@ def latest_briefing() -> Path | None:
             return None
         files = [f for f in BRIEFING_DIR.glob("*.html")]
         return max(files, key=lambda p: p.stat().st_mtime) if files else None
-    except Exception:
+    except Exception as e:
+        log_event("WARN", "Planner", "briefing_read_fail", f"{BRIEFING_DIR}: {e}")
         return None
+
+
+def prune_briefing() -> None:
+    """简报清理（规范.md L52）：>5 每5天清最旧5个；≤5（且>3）清3天前；≤3 不清。"""
+    if not BRIEFING_DIR.is_dir():
+        return
+    try:
+        files = sorted(BRIEFING_DIR.glob("*.html"), key=lambda p: p.stat().st_mtime)
+    except Exception:
+        return
+    n = len(files)
+    now_ts = time.time()
+    if n > 5:
+        ts_file = BRIEFING_DIR / ".prune_ts"
+        last = 0.0
+        try:
+            last = float(ts_file.read_text(encoding="utf-8").strip())
+        except Exception:
+            pass
+        if now_ts - last >= 5 * 86400:  # 每 5 天清一次最旧 5 个
+            for f in files[:5]:
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+            try:
+                ts_file.write_text(str(now_ts), encoding="utf-8")
+            except Exception:
+                pass
+    elif n > 3:
+        cutoff = now_ts - 3 * 86400  # ≤5 且 >3：清 3 天前
+        for f in files:
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except OSError:
+                pass
+    # ≤3 不清
 
 
 # ---------- 天气/节假日/地方数据 ----------
@@ -247,8 +290,12 @@ def _calendar_section(today: date) -> list[str]:
         lines.append(f"今日节气：{lunar['jieqi']}")
     else:
         lines.append(f"农历：{lunar.get('month') or ''}{lunar.get('day') or ''}")
-    if get_fufu(today):
-        lines.append(f"当前三伏：{'、'.join(get_fufu(today))}")
+    fufu = get_fufu(today)
+    if fufu:
+        lines.append(f"当前三伏：{'、'.join(fufu)}")
+    jiujiu = get_jiujiu(today)
+    if jiujiu:
+        lines.append(f"当前数九：{'、'.join(jiujiu)}")
     return lines
 
 
@@ -277,13 +324,15 @@ def morning(today: date, dry: bool) -> int:
     sent = load_sent_json(MORNING_SENT)
     if sent.get(today.isoformat()):
         return 0
-    settings = _settings()
+    settings, settings_corrupt = _settings()
 
     tasks = collect_tasks(today)
     countdown = collect_countdown(today, prune=not dry)
     briefing = latest_briefing() if settings.get("briefing_on") else None
 
     material: list[str] = ["【晨间早报素材】"]
+    if settings_corrupt:
+        material.append("⚠️ 配置文件 settings.json 异常，已用默认设置，请检查")
 
     # 1. 天气 + 预警
     material.extend(_weather_section())
@@ -307,7 +356,7 @@ def morning(today: date, dry: bool) -> int:
 
     # 5. 今日待办
     material.append(
-        "今日待办（原文如下，按时间先后、优先级）：\n"
+        "今日计划内任务（原文如下，按时间先后、优先级；为已存任务，或不含最新新增，todo 未运行时可能不全）：\n"
         + (fmt_tasks(tasks["today"]) if tasks["today"] else "（今天没有明确截止的待办）")
     )
 
@@ -366,12 +415,14 @@ def evening(today: date, dry: bool) -> int:
     sent = load_sent_json(EVENING_SENT)
     if sent.get(today.isoformat()):
         return 0
-    settings = _settings()
+    settings, settings_corrupt = _settings()
 
     tasks = collect_tasks(today)
     countdown = collect_countdown(today, prune=not dry)
 
     material: list[str] = ["【晚间复盘素材】"]
+    if settings_corrupt:
+        material.append("⚠️ 配置文件 settings.json 异常，已用默认设置，请检查")
     material.append("今日已完成（原文如下）：\n" + (fmt_tasks(tasks["done_today"]) if tasks["done_today"] else "（今天还没有打勾完成的任务）"))
     material.append("今日未完成（原文如下）：\n" + (fmt_tasks(tasks["today"]) if tasks["today"] else "（今天到期的都办完了）"))
 
@@ -412,6 +463,7 @@ def main(argv: list[str] | None = None) -> int:
     if not dry:
         prune_state_file(MORNING_SENT)
         prune_state_file(EVENING_SENT)
+        prune_briefing()
 
     if phase == "evening":
         return evening(today, dry)

@@ -14,7 +14,7 @@ import pytest
 MODULE_SRC = Path(__file__).resolve().parent.parent  # todo/
 sys.path.insert(0, str(MODULE_SRC))
 
-from task import ParsedTask, parse_task_line, scan_md_tasks, sort_due_key  # noqa: E402
+from task import ParsedTask, parse_task_line, scan_md_tasks  # noqa: E402
 
 try:
     import common  # noqa: F401  # 宿主注入验证
@@ -32,14 +32,12 @@ def test_parse_task_line_fields():
     assert t.remind_min == 15
     assert t.tags == ["生活"]
     assert t.priority == 3  # 🔼 = 3
-    assert t.trigger_time == time(9, 15)  # ⏰ 减去提前量
 
 
 def test_parse_task_line_no_time():
     t = parse_task_line("- [ ] 写周报 📅 2026-08-17")
     assert t is not None
     assert t.time is None
-    assert t.trigger_time is None
 
 
 def test_parse_task_line_non_task():
@@ -78,23 +76,3 @@ def test_scan_md_tasks_empty_dir():
     assert scan_md_tasks(Path(tempfile.mkdtemp()), "*.md") == []
     assert scan_md_tasks(Path("/no/such/dir"), "*.md") == []
 
-
-# ---------- sort_due_key（N2 回归） ----------
-
-def test_sort_due_key_mixed_time_and_date():
-    """混合有/无 ⏰ 的今日任务排序不抛 TypeError，无 ⏰ 排最后。"""
-    with_time = ParsedTask(raw_line="", text="有时刻", due=date(2026, 8, 17), time=time(10, 0))
-    no_time = ParsedTask(raw_line="", text="无时刻", due=date(2026, 8, 17), priority=1)
-    late_time = ParsedTask(raw_line="", text="晚时刻", due=date(2026, 8, 17), time=time(18, 0))
-    items = [no_time, late_time, with_time]
-    ordered = sorted(items, key=sort_due_key)
-    assert ordered[0] is with_time
-    assert ordered[1] is late_time
-    assert ordered[2] is no_time
-
-
-def test_sort_due_key_priority_within_same_time():
-    low = ParsedTask(raw_line="", text="低", due=date(2026, 8, 17), priority=5)
-    high = ParsedTask(raw_line="", text="高", due=date(2026, 8, 17), priority=1)
-    ordered = sorted([low, high], key=sort_due_key)
-    assert ordered[0] is high

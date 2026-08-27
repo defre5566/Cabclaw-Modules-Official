@@ -1,4 +1,4 @@
-"""任务解析（vault 扫描 + 待办解析 + DL:: 里程碑）。
+"""任务解析（vault 扫描 + 待办解析）。
 
 正则规则与 Obsidian Dataview 视图、各模块规范.md 保持一致（单一事实源）。
 """
@@ -9,8 +9,6 @@ from dataclasses import dataclass, field
 from datetime import date, time
 from pathlib import Path
 
-VAULT_TODO_DIR = Path.home() / "文档" / "private" / "01-Todo"
-
 TASK_LINE = re.compile(r"^-\s+\[( |x|X)\]\s+(.+)$")
 DUE = re.compile(r"📅\s*(\d{4}-\d{2}-\d{2})")
 TIME = re.compile(r"⏰\s*(\d{1,2}):(\d{2})")
@@ -19,8 +17,6 @@ DONE = re.compile(r"✅\s*(\d{4}-\d{2}-\d{2})")
 RECUR = re.compile(r"🔁")
 TAG = re.compile(r"#todo/(\S+)")
 PRIORITY = {"⏫": 1, "🔺": 2, "🔼": 3, "🔽": 4, "⏬": 5}
-
-DL_MILESTONE = re.compile(r"^\s*DL::\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(.+?)\s*$")
 
 
 @dataclass
@@ -41,15 +37,6 @@ class ParsedTask:
         """防重 key：日期|任务正文（同一任务当天只推一次）。"""
         d = self.due or date.today()
         return f"{d.isoformat()}|{self.text}"
-
-    @property
-    def trigger_time(self) -> time | None:
-        """实际触发时刻（⏰ 减去 🔔 提前量）。"""
-        if not self.time:
-            return None
-        minutes = self.time.hour * 60 + self.time.minute - (self.remind_min or 0)
-        minutes %= 1440
-        return time(minutes // 60, minutes % 60)
 
 
 def strip_fields(text: str) -> str:
@@ -101,14 +88,6 @@ def parse_task_line(line: str, file: Path | None = None, tag_prefix: str = "#tod
     )
 
 
-def sort_due_key(t: ParsedTask) -> tuple[time, int]:
-    """今日待办排序键：有 ⏰（含提前量）按触发时刻，无 ⏰ 按 23:59 排最后，再按优先级。
-
-    planner/todo 共用；⚠️ 不允许混用 time 与 date 比较（TypeError）。
-    """
-    return (t.trigger_time or t.time or time(23, 59), t.priority)
-
-
 def _scan_dir(directory: Path, glob_pat: str, tag_prefix: str = "#todo/") -> list[ParsedTask]:
     """按 glob 扫描目录下的任务行（含已完成，供筛选）。跳过代码块/注释。"""
     tasks: list[ParsedTask] = []
@@ -135,32 +114,6 @@ def _scan_dir(directory: Path, glob_pat: str, tag_prefix: str = "#todo/") -> lis
     return tasks
 
 
-def scan_todo_files(directory: Path = VAULT_TODO_DIR, glob_pat: str = "Todo-*.md",
-                    tag_prefix: str = "#todo/") -> list[ParsedTask]:
-    """扫描目录下全部 Todo-*.md，返回所有任务行（含已完成，供筛选）。"""
-    return _scan_dir(directory, glob_pat, tag_prefix)
-
-
 def scan_md_tasks(directory: Path, glob_pat: str = "*.md", tag_prefix: str = "#todo/") -> list[ParsedTask]:
     """扫描目录下所有 .md 的 Tasks 语法行（todo vault 模式用，不限定文件名）。"""
     return _scan_dir(directory, glob_pat, tag_prefix)
-
-
-def parse_milestones(directory: Path = VAULT_TODO_DIR) -> list[tuple[date, str]]:
-    """解析 DL:: 里程碑：[(日期, 名称)]。排除注释行。"""
-    result: list[tuple[date, str]] = []
-    if not directory.is_dir():
-        return result
-    for path in sorted(directory.glob("Todo-*.md")):
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            continue
-        for line in lines:
-            if line.strip().startswith("<!--"):
-                continue
-            m = DL_MILESTONE.match(line)
-            if m:
-                name = m.group(2).split("|")[0].strip()
-                result.append((date.fromisoformat(m.group(1)), name))
-    return result

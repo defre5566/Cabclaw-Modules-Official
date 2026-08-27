@@ -40,8 +40,9 @@ python3 <wechat-claw>/modules/register.py --enable <module>
 模块自带测试（`<module>/tests/`），运行时依赖主项目 `modules/common/`，需注入宿主路径：
 
 ```bash
+# cwd = 模块源仓库根（~/wechat-claw_modules_official）
 WECHAT_CLAW_HOST=<wechat-claw 项目根> \
-    python3 -m pytest wechat-claw_modules_official/todo/tests/
+    python3 -m pytest todo/tests/
 ```
 
 未设置 `WECHAT_CLAW_HOST` 时测试自动跳过（提示缺少主项目 common）。

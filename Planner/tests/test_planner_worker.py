@@ -47,6 +47,7 @@ def _mk(tmp: Path):
     pw.weather_alerts = lambda: []
     pw.get_lunar = lambda d: {"jieqi": None, "month": "七月", "day": "廿八"}
     pw.get_fufu = lambda d: []
+    pw.get_jiujiu = lambda d: []
     pw.is_holiday = lambda d: None
     pw.get_location = lambda: {"province": "内蒙古", "city": "集宁"}
     pw.localdata_available = lambda loc: []
@@ -278,8 +279,28 @@ def test_morning_briefing_file_attach():
     _set_tasks(ctx, [])
     pw.BRIEFING_DIR.mkdir()
     (pw.BRIEFING_DIR / "2026-08-20.html").write_text("<html>简报</html>")
-    pw._settings = lambda: {**pw.DEFAULT_SETTINGS, "briefing_on": True}
+    pw._settings = lambda: ({**pw.DEFAULT_SETTINGS, "briefing_on": True}, False)
     assert pw.morning(TODAY, dry=False) == 0
     types = [b[0]["type"] for b in ctx["pushes"]]
     assert types == ["reminder", "file"]           # 素材 + 原件双发
     assert ctx["pushes"][0][0]["text"].find("信息简报") != -1
+
+
+def test_morning_briefing_file_fail_degraded():
+    """P7：file 双发重试 3 次仍失败 → 补发说明 reminder + 不记已发 + return 1。"""
+    tmp = Path(tempfile.mkdtemp())
+    ctx = _mk(tmp)
+    _set_tasks(ctx, [])
+    pw.BRIEFING_DIR.mkdir()
+    briefing = pw.BRIEFING_DIR / "2026-08-20.html"
+    briefing.write_text("<html>简报</html>")
+    pw._settings = lambda: ({**pw.DEFAULT_SETTINGS, "briefing_on": True}, False)
+    # reminder 成功 / file 失败；sleep 打桩防拖慢（重试 3 次每次 3s）
+    pw.time.sleep = lambda s: None
+    pw.post_push = lambda body, token: (
+        ctx["pushes"].append((body, token)), body.get("type") != "file")[1]
+    assert pw.morning(TODAY, dry=False) == 1       # file 失败 → rc=1
+    types = [b[0]["type"] for b in ctx["pushes"]]
+    assert types == ["reminder", "file", "file", "file", "reminder"]  # 素材 + 重试3次 + 补发说明
+    assert ctx["pushes"][-1][0]["text"].find("简报原件发送失败") != -1
+    assert not pw.MORNING_SENT.exists()            # 不记已发（次日补发兜底）

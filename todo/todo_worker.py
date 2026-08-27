@@ -18,11 +18,12 @@ from common import (  # noqa: E402
     save_sent_json,
     prune_state_file,
     shared_save,
+    shared_load,
     load_token,
     post_push,
     log_event,
 )
-from task import scan_md_tasks  # noqa: E402  # Obsidian 私有解析器（模块自带）
+from task import scan_md_tasks, parse_task_line  # noqa: E402  # Obsidian 私有解析器（模块自带）
 from bridge.config import resolve_path  # noqa: E402
 
 MODULE_DIR = Path(__file__).resolve().parent          # modules/<name>/（代码）
@@ -30,6 +31,7 @@ DATA_DIR = MODULE_DIR.parent / "modules_data" / "todo"  # modules/modules_data/<
 SENT_FILE = DATA_DIR / "todo_sent.json"
 TASKS_DIR = DATA_DIR / "tasks"
 SETTINGS_FILE = DATA_DIR / "settings.json"
+SCAN_CACHE_FILE = DATA_DIR / "scan_cache.json"
 SHARED_NAME = "tasks"
 
 DEFAULT_TAGS = ["工作", "学习", "生活", "家庭", "购物", "健康", "娱乐"]
@@ -43,26 +45,69 @@ DEFAULT_SETTINGS = {
 }
 
 
-def _settings() -> dict:
-    """读数据区 settings.json（用户配置，缺键兜底默认）；module.json 只存声明不存值。"""
+def _settings() -> dict | None:
+    """读数据区 settings.json；文件不存在=用默认（首次安装正常）；文件存在但坏=返回 None（阻塞，T1）。"""
     s = dict(DEFAULT_SETTINGS)
+    if not SETTINGS_FILE.is_file():
+        return s  # 首次安装/未配置，用默认
     try:
         data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             s.update(data)
-    except Exception:
-        pass
-    return s
+        return s
+    except Exception as e:
+        log_event("ERROR", "todo", "settings_corrupt", f"{SETTINGS_FILE}: {e}")
+        return None  # 坏：返回 None 让 main 阻塞 + notification 提示
 
 
 # ---------- internal 数据源（自包含 JSON） ----------
 
-def _norm_task(t: dict) -> dict | None:
-    """补默认字段；缺 id/text/due 视为非法跳过。"""
+def _reminder_for_today(t: dict, today: date) -> tuple[str, str] | None:
+    """算今日是否是 t 的提醒日。是则返回 (today_iso, reminder_time HH:MM)，否则 None。
+
+    跨日(remind_min > time 分钟数)则今日提醒的是明日到期任务（提前量跨凌晨）。
+    重复任务靠 repeat_due 判 target_due 是否到期日；单次直接比 due。
+    T2 兜底：due/repeat 非法返回 None（不崩）。
+    """
+    time_str = t.get("time")
+    if not time_str:
+        return None  # 无 time 不提醒（仅进共享层供查询）
+    try:
+        h, m = map(int, str(time_str).split(":"))
+    except (ValueError, TypeError):
+        return None
+    remind_min = int(t.get("remind_min") or 0)
+    time_min = h * 60 + m
+    crosses = remind_min > time_min
+    target_due = today + timedelta(days=1 if crosses else 0)
+    if t.get("repeat") and isinstance(t.get("repeat"), dict):
+        try:
+            if repeat_due(t, target_due) != target_due:
+                return None  # target_due 非到期日
+        except (ValueError, TypeError):
+            return None  # repeat 结构坏
+    else:
+        try:
+            if date.fromisoformat(str(t["due"])) != target_due:
+                return None
+        except (ValueError, TypeError):
+            return None  # T2 兜底：非法 due
+    rmin = (time_min - remind_min) % 1440
+    return (today.isoformat(), f"{rmin // 60:02d}:{rmin % 60:02d}")
+
+
+def _norm_task(t: dict, today: date) -> dict | None:
+    """补默认字段 + 算 reminder_date/time；缺 id/text/due 或 due 格式非法跳过。"""
     if not isinstance(t, dict):
         return None
     if not t.get("id") or not t.get("text") or not t.get("due"):
         return None
+    try:
+        date.fromisoformat(str(t["due"]))
+    except (ValueError, TypeError):
+        log_event("WARN", "todo", "bad_due", f"{t.get('id')}: {t.get('due')}")
+        return None
+    r = _reminder_for_today(t, today)
     return {
         "id": str(t["id"]),
         "text": str(t["text"]),
@@ -74,10 +119,12 @@ def _norm_task(t: dict) -> dict | None:
         "repeat": t.get("repeat"),
         "done_dates": list(t.get("done_dates") or []),
         "tags": list(t.get("tags") or []),
+        "reminder_date": r[0] if r else None,
+        "reminder_time": r[1] if r else None,
     }
 
 
-def load_internal() -> list[dict]:
+def load_internal(today: date) -> list[dict]:
     """全扫 tasks/*.json（防跨月漏），按 id 去重合并；坏 JSON 跳过 + 告警（读容错）。"""
     tasks: list[dict] = []
     seen: set[str] = set()
@@ -94,7 +141,7 @@ def load_internal() -> list[dict]:
         if not isinstance(data, list):
             continue
         for item in data:
-            t = _norm_task(item)
+            t = _norm_task(item, today)
             if t is None or t["id"] in seen:
                 continue
             seen.add(t["id"])
@@ -104,10 +151,13 @@ def load_internal() -> list[dict]:
 
 # ---------- vault 数据源（复用 common/task.py 解析器，零重写） ----------
 
-def _from_parsed(pt) -> dict:
-    """ParsedTask → 统一任务 dict（与 internal 同 schema；id = sha1(due|text)[:8] 跨源稳定）。"""
+def _from_parsed(pt, today: date) -> dict:
+    """ParsedTask → 统一任务 dict（与 internal 同 schema；id = sha1(due|text)[:8] 跨源稳定）。
+
+    reminder_date/time 内存派生（vault .md 只读不写回）；done_dates 单次任务空（T10：与 internal 一致，完成状态靠 done/done_at）。
+    """
     due = pt.due or date.today()
-    return {
+    t = {
         "id": hashlib.sha1(f"{due}|{pt.text}".encode()).hexdigest()[:8],
         "text": pt.text,
         "due": due.isoformat(),
@@ -116,15 +166,20 @@ def _from_parsed(pt) -> dict:
         "done": bool(pt.done_date),
         "done_at": pt.done_date.isoformat() if pt.done_date else None,  # vault 只有日期粒度
         "repeat": None,
-        "done_dates": [pt.done_date.isoformat()] if pt.done_date else [],
+        "done_dates": [],  # T10：vault 单次任务 done_dates 空（与 internal 一致）
         "tags": list(pt.tags or []),
     }
+    r = _reminder_for_today(t, today)
+    t["reminder_date"] = r[0] if r else None
+    t["reminder_time"] = r[1] if r else None
+    return t
 
 
-def load_vault(settings: dict) -> list[dict]:
-    """vault 模式：扫描 vault_path 下所有 .md 的 Tasks 语法行；带日期（📅）才算 todo。
+def load_vault(settings: dict, today: date) -> list[dict]:
+    """vault 模式：扫描 vault_path 下所有 .md 的 Tasks 任务行；带日期（📅）才算 todo。
 
-    tag_prefix：设置的前缀（含 #，如 "#todo/"）；留空 = 不提取（无前缀标签不加）。
+    增量优化：按文件 mtime 缓存 scan_cache.json，mtime 没变用缓存的解析结果（重算 reminder_date），
+    变了才重新解析。缓存坏则全量重扫重建。tag_prefix：设置的前缀（含 #）；留空 = 不提取。
     """
     raw = (settings.get("vault_path") or "").strip()
     if not raw:
@@ -136,24 +191,98 @@ def load_vault(settings: dict) -> list[dict]:
         return []
     prefix = settings.get("tag_prefix") or ""
     extract = bool(settings.get("extract_tags", True))
+    tp = prefix if extract else ""
+
+    cache = _load_scan_cache()
+    files_cache = cache.get("files", {}) if isinstance(cache.get("files"), dict) else {}
+    new_files_cache: dict = {}
     tasks: list[dict] = []
     seen: set[str] = set()
-    for pt in scan_md_tasks(vault, "*.md", tag_prefix=prefix if extract else ""):
-        if pt.due is None:  # 带日期才算 todo
+
+    for path in sorted(vault.glob("*.md")):
+        abs_path = str(path)
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
             continue
-        t = _from_parsed(pt)
-        if t["id"] in seen:
-            continue
-        seen.add(t["id"])
-        tasks.append(t)
+        cached = files_cache.get(abs_path)
+        if cached and cached.get("mtime") == mtime:
+            # mtime 没变：用缓存的 base fields，重算 reminder_date/time（today 可能变）
+            for t_base in cached.get("tasks", []):
+                t = dict(t_base)
+                r = _reminder_for_today(t, today)
+                t["reminder_date"] = r[0] if r else None
+                t["reminder_time"] = r[1] if r else None
+                if t["id"] in seen:
+                    continue
+                seen.add(t["id"])
+                tasks.append(t)
+            new_files_cache[abs_path] = cached
+        else:
+            # mtime 变了：重新解析该文件
+            file_tasks: list[dict] = []
+            for pt in _scan_file(path, tp):
+                if pt.due is None:
+                    continue
+                t = _from_parsed(pt, today)
+                if t["id"] in seen:
+                    continue
+                seen.add(t["id"])
+                tasks.append(t)
+                # 缓存 base fields（不含 reminder_date/time，每次重算）
+                file_tasks.append({k: v for k, v in t.items() if k not in ("reminder_date", "reminder_time")})
+            new_files_cache[abs_path] = {"mtime": mtime, "tasks": file_tasks}
+
+    _save_scan_cache({"files": new_files_cache})
     return tasks
 
 
-def load_tasks(settings: dict) -> list[dict]:
+def _scan_file(path: Path, tag_prefix: str) -> list:
+    """解析单个 .md 文件的任务行（跳过代码块/注释），返回 ParsedTask 列表。"""
+    tasks: list = []
+    in_code = False
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return tasks
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        if stripped.startswith("<!--"):
+            continue
+        pt = parse_task_line(line.strip(), path, tag_prefix=tag_prefix)
+        if pt:
+            tasks.append(pt)
+    return tasks
+
+
+def _load_scan_cache() -> dict:
+    try:
+        data = json.loads(SCAN_CACHE_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_scan_cache(cache: dict) -> None:
+    try:
+        SCAN_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = SCAN_CACHE_FILE.with_name(SCAN_CACHE_FILE.name + ".tmp")
+        tmp.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(SCAN_CACHE_FILE)
+    except Exception:
+        pass
+
+
+def load_tasks(settings: dict, today: date) -> list[dict]:
     """单数据源：data_source == vault → load_vault；否则 internal（默认）。"""
     if settings.get("data_source") == "vault":
-        return load_vault(settings)
-    return load_internal()
+        return load_vault(settings, today)
+    return load_internal(today)
 
 
 # ---------- repeat 机器展开 ----------
@@ -202,46 +331,48 @@ def repeat_due(t: dict, today: date) -> date:
 
 # ---------- 提醒计算 ----------
 
-def _trigger_time(t: dict) -> dtime | None:
-    """触发时刻 = time - remind_min；无 time → None（不入提醒，仅进共享层供查询）。"""
-    if not t.get("time"):
-        return None
-    try:
-        h, m = map(int, str(t["time"]).split(":"))
-        minutes = h * 60 + m - int(t.get("remind_min") or 0)
-        minutes %= 1440
-        return dtime(minutes // 60, minutes % 60)
-    except (ValueError, TypeError):
-        return None
-
-
 def compute_reminders(tasks: list[dict], now: datetime, sent: dict) -> list[tuple[str, list[dict]]]:
-    """到期判定 → 按触发时刻分组合并，返回 [(HH:MM, [tasks])] 升序。"""
+    """提醒判定：查 reminder_date == today（加载时算好），按 reminder_time 分组合并。
+
+    reminder_date/time 在 _norm_task/_from_parsed 加载时算好存 dict（跨日/重复统一处理，T11 修复）。
+    """
     today = now.date()
+    today_str = today.isoformat()
     groups: dict[str, list[dict]] = {}
     for t in tasks:
-        if repeat_due(t, today) != today:
+        if t.get("reminder_date") != today_str:
+            continue  # 今日非提醒日
+        rtime = t.get("reminder_time")
+        if not rtime:
             continue
+        # 完成判定
         if t.get("repeat") and isinstance(t.get("repeat"), dict):
-            if today.isoformat() in (t.get("done_dates") or []):
+            if today_str in (t.get("done_dates") or []):
                 continue  # 重复任务：今天已完成
         elif t.get("done"):
             continue
-        trig = _trigger_time(t)
-        if trig is None:
-            continue  # 无 time 不入提醒（避免全天任务深夜打扰）
-        if trig > now.time():
-            continue  # 未到点
-        if f"{today}|{t['id']}" in sent:
-            continue  # 防重键 = 日期|id
-        groups.setdefault(trig.strftime("%H:%M"), []).append(t)
+        # 到点判定
+        try:
+            h, m = map(int, rtime.split(":"))
+            if dtime(h, m) > now.time():
+                continue  # 未到点
+        except (ValueError, TypeError):
+            continue
+        # 防重键 = 提醒日|id
+        if f"{today_str}|{t['id']}" in sent:
+            continue
+        groups.setdefault(rtime, []).append(t)
     return sorted(groups.items())
 
 
 # ---------- 共享刷新 ----------
 
 def refresh_shared(tasks: list[dict]) -> bool:
-    """shared/tasks.json = {ts, tasks:[全量]}；ts 由 shared_save 自动带（原子写）。"""
+    """shared/tasks.json = {ts, tasks:[全量]}；tasks 内容变了才写（深比较，避免无用全量 I/O）。"""
+    existing = shared_load(SHARED_NAME)
+    old = existing.get("tasks") if isinstance(existing, dict) else None
+    if old == tasks:
+        return True  # 无变化，跳过 shared_save
     return shared_save(SHARED_NAME, {"tasks": tasks})
 
 
@@ -250,10 +381,20 @@ def refresh_shared(tasks: list[dict]) -> bool:
 def main(argv: list[str] | None = None) -> int:
     argv = argv or sys.argv[1:]
     dry = "--dry-run" in argv
-    s = _settings()
-    tasks = load_tasks(s)
-    sent = load_sent_json(SENT_FILE)
     now = datetime.now()
+    today = now.date()
+    sent = load_sent_json(SENT_FILE)
+    s = _settings()
+    if s is None:  # settings 坏 → 阻塞 + notification(原文) 提示 + 防刷屏（T1）
+        key = f"{today}|settings_corrupt"
+        if key not in sent:
+            post_push({"type": "notification",
+                       "text": "（原文）todo 配置文件 settings.json 损坏，提醒功能已暂停，请检查或让 agent 修复"},
+                      load_token(MODULE_DIR))
+            sent[key] = now.strftime("%Y-%m-%d %H:%M:%S")
+            save_sent_json(SENT_FILE, sent)
+        return 1
+    tasks = load_tasks(s, today)
 
     groups = compute_reminders(tasks, now, sent)
     if dry:

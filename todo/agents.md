@@ -6,19 +6,23 @@
 ## 数据源判断
 
 先读 `modules/todo/module.json` 的 `settings.data_source`：
-- **internal**（默认）：任务在 `modules/todo/tasks/`（JSON 文件，按月度组织）
-- **vault**：任务在 `settings.vault_path` 的 Obsidian 库里（Tasks 语法），**不要改 `modules/todo/tasks/` 目录**
+- **internal**（默认）：任务在 `modules/modules_data/todo/tasks/`（JSON 文件，按月度组织）
+- **vault**：任务在 `settings.vault_path` 的 Obsidian 库里（Tasks 语法），**不要改 `modules/modules_data/todo/tasks/` 目录**
 
 ## 写任务（internal 模式）
 
 1. 用户说"记个任务" → 确定 **due 日期**（没有就问用户；跨月任务按 due 所在月）
-2. 写进 `modules/todo/tasks/<due月>.json`（如 2026-09 到期 → `2026-09.json`；不存在则新建）
+2. 写进 `modules/modules_data/todo/tasks/<due月>.json`（如 2026-09 到期 → `2026-09.json`；不存在则新建）
 3. **写入前先重读该文件** → 按 `id` 合并（新任务追加）→ **原子替换**（先写 `.tmp` 再替换，防并发丢更新）
 4. 任务字段：
    - `id`：`sha1(f"{due}|{text}")[:8]`（稳定）
    - `time`：到期时刻 HH:MM（用户给了时间才填；**无 time 不提醒只存档**）
    - `remind_min`：提前量分钟（如"提前15分钟" → 15）
    - `tags`：**只能从 `settings.tags_vocab` 选**；`allow_new_tag=false` 时不得自造新词（用户要求新分类 → 告知用户需在设置中加词）
+5. **回话可见性（写完必须读回核对）**：写完后重读落盘的任务，回话必须含**具体日期和时刻**让用户核对——
+   - 常规："好的，我将于 **9月2日（周三）16:30** 提醒您参加女儿家长会"（due + time - remind_min）
+   - 跨日（remind_min 超过 time 的分钟数）：标注"提前量跨凌晨，将于 **9月1日 23:30** 提醒（9月2日 00:30 到期）"
+   - 用户看到具体值即可核对日期推算/时刻，有误可继续对话调整
 
 ## 勾选完成
 
@@ -29,7 +33,7 @@
 - **vault 模式**（Obsidian，Tasks 插件语法）：
   - 在任务行尾追加完成标记 `✅ YYYY-MM-DD`（Tasks 插件标准语法，如 `- [x] 写周报 📅 2026-08-21 ✅ 2026-08-21`）
   - 读取时任务解析器按 `✅` 识别完成日期；Tasks 语法无时间戳字段，vault 模式只有日期粒度
-  - 重复任务（行内有 🔁）：同样追加 `✅ 今天日期`，不要删除或改写其他字段
+  - 重复任务（行内有 🔁）：同样追加 `✅ 今天日期`，不要删除或改写其他字段——**重复的下一次依赖 Tasks 插件生成新任务行**，worker 不展开 repeat（仅标记）
 
 ## 查任务
 
