@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import tempfile
@@ -90,6 +91,30 @@ def test_load_internal_cross_month_all_scanned():
     _write([_task("a", TODAY.isoformat())])
     (tw.TASKS_DIR / "2099-01.json").write_text(json.dumps({"tasks": [_task("b", "2099-01-01")]}))
     assert {t["id"] for t in tw.load_internal(TODAY)} == {"a", "b"}
+
+
+def test_norm_task_missing_id_autofilled():
+    """agent 直写缺 id → 自动补算 sha1(due|text)[:8]（与 vault 同式，跨源一致）。"""
+    t = {"text": "取快递", "due": TODAY.isoformat()}
+    n = tw._norm_task(t, TODAY)
+    expected = hashlib.sha1(f"{TODAY.isoformat()}|取快递".encode()).hexdigest()[:8]
+    assert n is not None and n["id"] == expected
+
+
+def test_norm_task_missing_text_or_due_still_skipped():
+    """兜底只救缺 id：text/due 缺失仍跳过。"""
+    assert tw._norm_task({"due": TODAY.isoformat()}, TODAY) is None
+    assert tw._norm_task({"text": "无日期"}, TODAY) is None
+
+
+def test_norm_task_autofill_id_deterministic():
+    """同 text+due 补出同 id → load_internal 去重合并，防重键（日期|id）稳定。"""
+    t = {"text": "交房租", "due": TOMORROW.isoformat()}
+    _mk(Path(tempfile.mkdtemp()))
+    _write([t, dict(t)])  # 两条同文同日、均无 id
+    tasks = tw.load_internal(TODAY)
+    assert len(tasks) == 1
+    assert tasks[0]["id"] == hashlib.sha1(f"{TOMORROW.isoformat()}|交房租".encode()).hexdigest()[:8]
 
 
 # ---------- repeat 展开 ----------

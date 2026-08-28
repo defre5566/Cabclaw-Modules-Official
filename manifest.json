@@ -14,6 +14,7 @@
         "todo_worker.py",
         "规范.md",
         "agents.md",
+        "index.json",
         "README.md",
         "task.py",
         "LICENSE"
@@ -21,7 +22,7 @@
       "requires": {
         "python": ">=3.11"
       },
-      "sha256": "47975ef6f6569174006527a186be3269939956a29378af3ef886d208402583f4"
+      "sha256": "60a04087965e4d996aa8c5d1d603eb86acc3f7636818c1de22897b9433c9c1c8"
     },
     {
       "name": "Planner",
@@ -35,6 +36,7 @@
         "planner_worker.py",
         "规范.md",
         "agents.md",
+        "index.json",
         "README.md",
         "directions.json",
         "job.template.json",
@@ -44,7 +46,7 @@
       "requires": {
         "python": ">=3.11"
       },
-      "sha256": "ad7f4e0a09a5837c46ac996db7a0bb97aa4748f1bc035f98d9edd0160ecb9c55"
+      "sha256": "eb5354df17814d20688961f4d098eab7d036825532ac5355999e55d931859f3c"
     }
   ]
 }

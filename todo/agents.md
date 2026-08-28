@@ -1,46 +1,41 @@
 # todo 模块 · agent 维护指引
 
-> 你是 todo 模块的任务管理员。用户让你记任务/查任务/改任务时，按本指引操作。
-> 完整业务语义见同目录 `规范.md`；模块设置（数据源/词表）见 `modules/todo/module.json` 的 `settings`。
+> 你是 todo 模块的任务管理员。用户让你记任务/查任务/改任务时，按本指引直达操作。
 
-## 数据源判断
+## 写任务
 
-先读 `modules/todo/module.json` 的 `settings.data_source`：
-- **internal**（默认）：任务在 `modules/modules_data/todo/tasks/`（JSON 文件，按月度组织）
-- **vault**：任务在 `settings.vault_path` 的 Obsidian 库里（Tasks 语法），**不要改 `modules/modules_data/todo/tasks/` 目录**
+1. 任务文件固定为 `modules/modules_data/todo/tasks/<due月>.json`（按 due 所在月分文件，如 2026-09 到期 → `2026-09.json`），形态 `{"month": "YYYY-MM", "tasks": [...]}`。
+2. 新增待办两步完成：读该文件（不存在则直接创建含 `month` 和空 `tasks` 的骨架）→ 在 `tasks` 末尾追加一条后保存。
 
-## 写任务（internal 模式）
+条目结构（照抄改值）：
 
-1. 用户说"记个任务" → 确定 **due 日期**（没有就问用户；跨月任务按 due 所在月）
-2. 写进 `modules/modules_data/todo/tasks/<due月>.json`（如 2026-09 到期 → `2026-09.json`；不存在则新建）
-3. **写入前先重读该文件** → 按 `id` 合并（新任务追加）→ **原子替换**（先写 `.tmp` 再替换，防并发丢更新）
-4. 任务字段：
-   - `id`：`sha1(f"{due}|{text}")[:8]`（稳定）
-   - `time`：到期时刻 HH:MM（用户给了时间才填；**无 time 不提醒只存档**）
-   - `remind_min`：提前量分钟（如"提前15分钟" → 15）
-   - `tags`：**只能从 `settings.tags_vocab` 选**；`allow_new_tag=false` 时不得自造新词（用户要求新分类 → 告知用户需在设置中加词）
-5. **回话可见性（写完必须读回核对）**：写完后重读落盘的任务，回话必须含**具体日期和时刻**让用户核对——
-   - 常规："好的，我将于 **9月2日（周三）16:30** 提醒您参加女儿家长会"（due + time - remind_min）
-   - 跨日（remind_min 超过 time 的分钟数）：标注"提前量跨凌晨，将于 **9月1日 23:30** 提醒（9月2日 00:30 到期）"
-   - 用户看到具体值即可核对日期推算/时刻，有误可继续对话调整
+```json
+{"text": "取快递", "due": "2026-08-28", "time": "18:00", "remind_min": 10, "tags": []}
+```
+
+- `text`、`due`（YYYY-MM-DD）必填；没有 due 日期就问用户，不猜
+- `time`（HH:MM）用户给了时刻才填；**无 time 不提醒只存档**
+- `remind_min` 用户说"提前 N 分钟"才填
+- `id` 不用写——worker 加载时对缺 id 条目自动补算（sha1(due|text) 稳定生成，同文同日天然防重）
+- `tags` 默认不加；用户明确要求分类时从 `modules/modules_data/todo/settings.json` 的 `tags_vocab` 选词，词表外的词不加
+
+回话必须含具体日期和时刻让用户核对（由用户输入直接推算，不需读文件）：
+- 常规："好的，我将于 **9月2日（周三）16:30** 提醒您参加女儿家长会"（due + time − remind_min）
+- 跨日（remind_min 越过当天零点）："提前量跨凌晨，将于 **9月1日 23:30** 提醒（9月2日 00:30 到期）"
 
 ## 勾选完成
 
-- **internal 模式**（JSON）：
-  - 单次任务：`done = true` + **`done_at = 当前时间戳`**（ISO 格式 `YYYY-MM-DDTHH:MM:SS`，如 `2026-08-21T09:30:00`）
-  - 重复任务（有 `repeat`）：把今天 `YYYY-MM-DD` **追加进 `done_dates`**（不要置 done，不要写 done_at）
-  - 注意：`done_at` 是完成时刻记录，Planner 晚报据此判断"今日完成了什么"——**必须写**
-- **vault 模式**（Obsidian，Tasks 插件语法）：
-  - 在任务行尾追加完成标记 `✅ YYYY-MM-DD`（Tasks 插件标准语法，如 `- [x] 写周报 📅 2026-08-21 ✅ 2026-08-21`）
-  - 读取时任务解析器按 `✅` 识别完成日期；Tasks 语法无时间戳字段，vault 模式只有日期粒度
-  - 重复任务（行内有 🔁）：同样追加 `✅ 今天日期`，不要删除或改写其他字段——**重复的下一次依赖 Tasks 插件生成新任务行**，worker 不展开 repeat（仅标记）
+- 单次任务：`done = true` + `done_at = 当前时刻`（ISO `YYYY-MM-DDTHH:MM:SS`）——done_at 是 Planner 晚报"今日完成了什么"的依据，必须写
+- 重复任务（条目有 `repeat` 字段）：把今天 `YYYY-MM-DD` 追加进 `done_dates`，不置 done、不写 done_at
 
 ## 查任务
 
-- **读共享层** `modules/common/shared/tasks.json`（主项目根下；注意 `ts` 新鲜度，过期问用户或提示 todo 未运行）
-- 按用户需求过滤（如"多少工作没完成" → `tags 含"工作" && done=false`）
-- **不要直接翻模块内部文件**
+读共享层 `modules/common/shared/tasks.json`（注意 `ts` 新鲜度，过期提示 todo 未运行），按需求过滤（如"还有多少工作没做" → `tags` 含"工作" 且 `done=false`）。不要翻模块内部文件。
 
-## 数据源切换提示
+## Obsidian 模式（仅当用户明确在用 Obsidian 库）
 
-- 切换 internal ↔ vault 后，`todo_sent.json` 防重键会错位，**当天已推任务可能重复提醒一次**——属预期，不必惊慌
+数据源切到 vault（见 `modules/modules_data/todo/settings.json` 的 `data_source` 与 `vault_path`）时：任务在用户库 .md 的任务行里，Tasks 语法（📅 到期日、⏰ 到期时刻）；勾选完成 = 任务行尾追加 `✅ YYYY-MM-DD`（重复任务同理，不删改其他字段——下一次提醒依赖 Tasks 插件生成新行）；不要改 `modules/modules_data/todo/tasks/` 目录。
+
+## 已知边界
+
+切换数据源（internal ↔ vault）当天，已推任务可能重复提醒一次，属预期，不必向用户解释机制。

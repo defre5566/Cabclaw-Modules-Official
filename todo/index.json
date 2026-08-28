@@ -1,0 +1,10 @@
+{
+  "module": "todo",
+  "entries": [
+    {
+      "kw": ["提醒", "待办", "帮我记", "备忘", "记一下", "别忘", "催我", "帮我盯", "#todo"],
+      "file": "modules/todo/agents.md",
+      "title": "todo 待办与提醒 · 任务登记/查询指引"
+    }
+  ]
+}

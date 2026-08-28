@@ -97,21 +97,27 @@ def _reminder_for_today(t: dict, today: date) -> tuple[str, str] | None:
 
 
 def _norm_task(t: dict, today: date) -> dict | None:
-    """补默认字段 + 算 reminder_date/time；缺 id/text/due 或 due 格式非法跳过。"""
+    """补默认字段 + 算 reminder_date/time；缺 text/due 或 due 格式非法跳过。
+
+    id 兜底：缺 id 时自动补算 sha1(f"{due}|{text}")[:8]（与 vault 同式，跨源稳定），
+    agent 直写可不生成 id；text/due 缺失仍跳过。
+    """
     if not isinstance(t, dict):
         return None
-    if not t.get("id") or not t.get("text") or not t.get("due"):
+    if not t.get("text") or not t.get("due"):
         return None
     try:
-        date.fromisoformat(str(t["due"]))
+        due = str(t["due"])
+        date.fromisoformat(due)
     except (ValueError, TypeError):
         log_event("WARN", "todo", "bad_due", f"{t.get('id')}: {t.get('due')}")
         return None
+    tid = str(t["id"]) if t.get("id") else hashlib.sha1(f"{due}|{t['text']}".encode()).hexdigest()[:8]
     r = _reminder_for_today(t, today)
     return {
-        "id": str(t["id"]),
+        "id": tid,
         "text": str(t["text"]),
-        "due": str(t["due"]),
+        "due": due,
         "time": t.get("time") or None,
         "remind_min": t.get("remind_min"),
         "done": bool(t.get("done", False)),

@@ -8,7 +8,7 @@
 数据文件：`modules/modules_data/Planner/countdown.json`（用户数据区，明文 JSON）
 
 - 结构：`{"entries": [{"name": "名称", "date": "YYYY-MM-DD", "repeat": true/false}]}`
-- **写前先重读文件** → 按 name 合并（同名更新，不重复追加）→ **原子替换**（先写 .tmp 再替换，防并发丢更新）
+- 维护两步完成：读 `modules/modules_data/Planner/countdown.json`（不存在则创建骨架）→ 按 name 合并（同名更新，不重复追加）后保存
 - 用户说"记个纪念日"：确认日期；生日/周年类 → `repeat: true`（按年循环）；一次性事件（如考试、出行）→ `repeat: false`
 - 用户说"查倒计时"：读文件列出未来 30 天内条目（含 repeat 的下一次日期）；注：早报推送窗口 15 天（循环任务提前 15 天报），查询窗口 30 天（用户主动查看更远规划）
 - 用户说"删掉 XX"：从 entries 移除该 name

@@ -1,0 +1,10 @@
+{
+  "module": "Planner",
+  "entries": [
+    {
+      "kw": ["倒计时", "纪念日", "生日", "考试", "周年", "会议", "面试", "答辩"],
+      "file": "modules/Planner/agents.md",
+      "title": "Planner 倒计时/纪念日 · 日期登记指引"
+    }
+  ]
+}
