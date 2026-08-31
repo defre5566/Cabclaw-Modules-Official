@@ -26,7 +26,7 @@
     },
     {
       "name": "Planner",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "purpose": "早晚报聚合模块（晨间早报 + 晚间复盘）",
       "data_sources": [
         "shared"
@@ -46,7 +46,7 @@
       "requires": {
         "python": ">=3.11"
       },
-      "sha256": "34e90ab45e8f705867a38a8a8efa5fc4d943f2022027773a89bf6abd24dc6f6c"
+      "sha256": "806bc7cd3aaccdbf1a5f9a43e97db6fa7e7822f1769191a1d57dd07f66d13549"
     }
   ]
 }

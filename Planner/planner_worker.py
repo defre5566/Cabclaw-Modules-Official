@@ -390,24 +390,11 @@ def _temp_swing_note() -> str | None:
     return f"今日温差较大（{lo}~{hi}°C），注意增减衣物。"
 
 
-def _briefing_summary(path: Path) -> str | None:
-    """简报要点文本（HTML 同名 .summary.txt，简报生成任务产出）；缺失返回 None。"""
-    p = path.with_suffix(".summary.txt")
-    try:
-        return p.read_text(encoding="utf-8").strip() or None
-    except OSError:
-        return None
-
-
 def _briefing_section(briefing: Path, resend_note: bool = False) -> str:
-    """简报段（要点来自 summary 文本，缺失降级为一句话；均不阻塞）。"""
-    prefix = "信息简报要点（早报时段未送达，晚报补发）：\n" if resend_note else "信息简报要点：\n"
-    summary = _briefing_summary(briefing)
-    if summary:
-        return prefix + summary + "\n简报原文文件随后单独发送。"
-    note = "今日信息简报已生成（早报时段未送达），原文文件随后单独发送。" if resend_note \
-        else "今日信息简报已生成，原文文件随后单独发送。"
-    return note
+    """简报段（指示式：渲染 agent 读 HTML 挑要点，数量约束防挑多）。"""
+    prefix = "信息简报（早报时段未送达，晚报补发）：请阅读 " if resend_note else "信息简报：请阅读 "
+    return (f"{prefix}{briefing}，只挑 1-2 条最重要的要点，50 字左右概括"
+            "（不要罗列多条），简报原文文件随后单独发送。")
 
 
 def _tasks_stale() -> bool:
@@ -515,49 +502,42 @@ def morning(today: date, dry: bool) -> int:
                 briefing_note = ("（信息简报今日未生成：任务已登记但等待多轮仍未就绪，"
                                  "可能是网络或检索故障，可在后台查看简报任务日志）")
 
-    material: list[str] = []
-    if settings_corrupt:
-        material.append("（系统提示：配置读取异常，本次按默认设置生成，请检查 settings.json）")
+    # 段0 运维提示（配置异常时）
+    para0 = ["（系统提示：配置读取异常，本次按默认设置生成，请检查 settings.json）"] if settings_corrupt else []
 
-    # 1. 问候 + 历法（信息条目，语气归渲染层）
-    material.append(_greeting_head(today))
-
-    # 2. 天气 + 预警（预警带建议）
-    material.extend(_weather_section())
-
-    # 3. 温差提醒（快照可得且温差大时）
+    # 段1 开场：问候历法 + 天气预警 + 温差 + 倒计时
+    para1 = [_greeting_head(today), *_weather_section()]
     swing = _temp_swing_note()
     if swing:
-        material.append(swing)
-
-    # 4. 倒计时/纪念日
+        para1.append(swing)
     if countdown:
-        material.append("倒计时：" + _countdown_lines(countdown) + "。")
+        para1.append("倒计时：" + _countdown_lines(countdown) + "。")
 
-    # 5. 逾期
+    # 段2 任务：逾期 + 今日待办
+    para2: list[str] = []
     if tasks["overdue"]:
-        material.append(f"已逾期 {len(tasks['overdue'])} 条，记得尽快处理：\n" + fmt_overdue(tasks["overdue"]))
-
-    # 6. 今日待办
+        para2.append(f"已逾期 {len(tasks['overdue'])} 条，记得尽快处理：\n" + fmt_overdue(tasks["overdue"]))
     if tasks["today"]:
-        material.append(f"今天有 {len(tasks['today'])} 件事：\n" + fmt_tasks(tasks["today"]))
+        para2.append(f"今天有 {len(tasks['today'])} 件事：\n" + fmt_tasks(tasks["today"]))
     else:
-        material.append("今天没有明确截止的待办。")
+        para2.append("今天没有明确截止的待办。")
     if _tasks_stale():
-        material.append("（todo 数据未更新，以上任务可能不全）")
+        para2.append("（todo 数据未更新，以上任务可能不全）")
 
-    # 7. 简报要点 / 未生成说明
+    # 段3 简报：要点指示 / 未生成说明
+    para3: list[str] = []
     if briefing:
-        material.append(_briefing_section(briefing))
+        para3.append(_briefing_section(briefing))
     elif briefing_note:
-        material.append(briefing_note)
+        para3.append(briefing_note)
 
-    # 8. 收尾提示（末行；渲染层按其方向结合素材生成一句收尾，不播报该行）
+    # 段4 收尾：收尾提示（末行，渲染层按其方向结合素材生成一句收尾，不播报该行）
+    para4: list[str] = []
     hint = _closing_hint_morning(tasks, countdown, swing)
     if hint:
-        material.append(hint)
+        para4.append(hint)
 
-    text = "\n".join(material)
+    text = "\n\n".join("\n".join(p) for p in (para0, para1, para2, para3, para4) if p)
 
     if dry:
         print(f"[Planner][dry] morning 素材:\n{text}")
@@ -606,40 +586,35 @@ def evening(today: date, dry: bool) -> int:
         if b is not None and not load_sent_json(MORNING_SENT).get(f"{today.isoformat()}|briefing"):
             briefing = b
 
-    material: list[str] = []
-    if settings_corrupt:
-        material.append("（系统提示：配置读取异常，本次按默认设置生成，请检查 settings.json）")
+    # 段0 运维提示（配置异常时）
+    para0 = ["（系统提示：配置读取异常，本次按默认设置生成，请检查 settings.json）"] if settings_corrupt else []
 
-    # 1. 问候
-    material.append(_evening_greeting())
+    # 段1 问候
+    para1 = [_evening_greeting()]
 
-    # 2. 今日完成
+    # 段2 任务：今日完成 + 未完成 + 倒计时
+    para2: list[str] = []
     if tasks["done_today"]:
-        material.append(f"今天完成 {len(tasks['done_today'])} 件：\n" + fmt_tasks(tasks["done_today"]))
+        para2.append(f"今天完成 {len(tasks['done_today'])} 件：\n" + fmt_tasks(tasks["done_today"]))
     else:
-        material.append("今天还没有打勾完成的任务。")
-
-    # 3. 今日未完成
+        para2.append("今天还没有打勾完成的任务。")
     if tasks["today"]:
-        material.append(f"还有 {len(tasks['today'])} 件今日任务未完成：\n" + fmt_tasks(tasks["today"]))
+        para2.append(f"还有 {len(tasks['today'])} 件今日任务未完成：\n" + fmt_tasks(tasks["today"]))
     else:
-        material.append("今天到期的都办完了。")
-
-    # 4. 倒计时/纪念日
+        para2.append("今天到期的都办完了。")
     if countdown:
-        material.append("倒计时：" + _countdown_lines(countdown, due_today_phrase=False) + "。")
+        para2.append("倒计时：" + _countdown_lines(countdown, due_today_phrase=False) + "。")
 
-    # 5. 简报兜底（早报时段未送达，晚报补发）
+    # 段3 简报兜底（早报时段未送达，晚报补发）
+    para3: list[str] = []
     if briefing:
-        material.append(_briefing_section(briefing, resend_note=True))
+        para3.append(_briefing_section(briefing, resend_note=True))
 
-    # 6. 晚间建议（内置池按年积日轮换）
-    material.append(EVENING_TIPS[today.timetuple().tm_yday % len(EVENING_TIPS)])
+    # 段4 收尾：晚间建议（内置池轮换）+ 收尾提示（末行）
+    para4 = [EVENING_TIPS[today.timetuple().tm_yday % len(EVENING_TIPS)]]
+    para4.append(_closing_hint_evening(tasks))
 
-    # 7. 收尾提示（末行；渲染层按其方向结合素材生成一句收尾，不播报该行）
-    material.append(_closing_hint_evening(tasks))
-
-    text = "\n".join(material)
+    text = "\n\n".join("\n".join(p) for p in (para0, para1, para2, para3, para4) if p)
 
     if dry:
         print(f"[Planner][dry] evening 素材:\n{text}")

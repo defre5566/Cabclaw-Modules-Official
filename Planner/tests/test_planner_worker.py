@@ -447,18 +447,18 @@ def test_briefing_diag_unavailable_push():
 # ---------- 晚报简报兜底 ----------
 
 def test_evening_briefing_fallback_when_morning_missed():
-    """早报没带成（无 <date>|briefing 标记）+ 当天有产物 → 晚报补简报段（summary 注入）+ file 附发。"""
+    """早报没带成（无 <date>|briefing 标记）+ 当天有产物 → 晚报补简报段（指示式）+ file 附发。"""
     tmp = Path(tempfile.mkdtemp())
     ctx = _mk(tmp)
     pw._settings = lambda: ({**pw.DEFAULT_SETTINGS, "briefing_on": True}, False)
     pw.BRIEFING_DIR.mkdir(exist_ok=True)
     (pw.BRIEFING_DIR / f"{TODAY.isoformat()}.html").write_text("<html>简报</html>")
-    (pw.BRIEFING_DIR / f"{TODAY.isoformat()}.summary.txt").write_text("1. 要点一\n2. 要点二\n", encoding="utf-8")
     assert pw.evening(TODAY, dry=False) == 0
     types = [b[0]["type"] for b in ctx["pushes"]]
     assert types == ["reminder", "file"]
     text = ctx["pushes"][0][0]["text"]
-    assert "信息简报要点" in text and "要点一" in text and "早报时段未送达" in text
+    assert "信息简报" in text and "早报时段未送达" in text
+    assert "1-2 条" in text and "50 字" in text      # 数量约束防挑多
 
 
 def test_evening_briefing_skip_if_morning_had_it():
