@@ -3,7 +3,7 @@
   "modules": [
     {
       "name": "todo",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "purpose": "待办提醒：按到期时刻推送提醒，支持内置数据源与 Obsidian 库",
       "data_sources": [
         "internal",
@@ -22,11 +22,11 @@
       "requires": {
         "python": ">=3.11"
       },
-      "sha256": "60a04087965e4d996aa8c5d1d603eb86acc3f7636818c1de22897b9433c9c1c8"
+      "sha256": "2c2607a18239ade95944e71de6b932e8d0cd27d65012e5fe5d61f65ae5dc9c6a"
     },
     {
       "name": "Planner",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "purpose": "早晚报聚合模块（晨间早报 + 晚间复盘）",
       "data_sources": [
         "shared"
@@ -46,7 +46,7 @@
       "requires": {
         "python": ">=3.11"
       },
-      "sha256": "eb5354df17814d20688961f4d098eab7d036825532ac5355999e55d931859f3c"
+      "sha256": "34e90ab45e8f705867a38a8a8efa5fc4d943f2022027773a89bf6abd24dc6f6c"
     }
   ]
 }

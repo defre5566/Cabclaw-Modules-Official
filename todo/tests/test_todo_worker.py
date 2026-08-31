@@ -332,3 +332,32 @@ def test_settings_corrupt_blocks(monkeypatch):
     assert tw.main([]) == 1                                    # 仍阻塞
     notes = [b for b in ctx["pushes"] if b["type"] == "notification"]
     assert len(notes) == 1                                     # 防刷屏：当天不重复推
+
+
+def test_dry_run_settings_corrupt_no_push(monkeypatch):
+    """settings 损坏 + dry → rc=0、零推送（真跑才推 notification 并阻塞）。"""
+    tmp = Path(tempfile.mkdtemp())
+    ctx = _mk(tmp)
+    ctx["pushes"] = []
+    tw.post_push = lambda body, token: (ctx["pushes"].append(body), True)[1]
+    tw.SETTINGS_FILE = tmp / "settings.json"
+    tw.SETTINGS_FILE.write_text("{broken")
+    _fixed_now(monkeypatch)
+    assert tw.main(["--dry-run"]) == 0
+    assert ctx["pushes"] == []
+    assert not tw.SENT_FILE.exists()
+
+
+def test_vault_dry_no_scan_cache_write():
+    """vault 模式 save_cache=False（dry）→ 只扫描不落盘缓存；True 才写。"""
+    tmp = Path(tempfile.mkdtemp())
+    _mk(tmp)
+    tw.SCAN_CACHE_FILE = tmp / "scan_cache.json"
+    vault = tmp / "vault"
+    vault.mkdir()
+    (vault / "n.md").write_text(f"- [ ] 任务 📅 {TODAY} ⏰ 09:00\n")
+    settings = {"vault_path": str(vault), "tag_prefix": "", "extract_tags": True}
+    tasks = tw.load_vault(settings, TODAY, save_cache=False)
+    assert tasks and tw.SCAN_CACHE_FILE.exists() is False   # dry 不写缓存
+    tasks = tw.load_vault(settings, TODAY, save_cache=True)
+    assert tasks and tw.SCAN_CACHE_FILE.exists()            # 正常写缓存

@@ -181,11 +181,12 @@ def _from_parsed(pt, today: date) -> dict:
     return t
 
 
-def load_vault(settings: dict, today: date) -> list[dict]:
+def load_vault(settings: dict, today: date, save_cache: bool = True) -> list[dict]:
     """vault 模式：扫描 vault_path 下所有 .md 的 Tasks 任务行；带日期（📅）才算 todo。
 
     增量优化：按文件 mtime 缓存 scan_cache.json，mtime 没变用缓存的解析结果（重算 reminder_date），
     变了才重新解析。缓存坏则全量重扫重建。tag_prefix：设置的前缀（含 #）；留空 = 不提取。
+    save_cache=False（dry-run）只扫描不落盘缓存（零副作用）。
     """
     raw = (settings.get("vault_path") or "").strip()
     if not raw:
@@ -239,7 +240,8 @@ def load_vault(settings: dict, today: date) -> list[dict]:
                 file_tasks.append({k: v for k, v in t.items() if k not in ("reminder_date", "reminder_time")})
             new_files_cache[abs_path] = {"mtime": mtime, "tasks": file_tasks}
 
-    _save_scan_cache({"files": new_files_cache})
+    if save_cache:
+        _save_scan_cache({"files": new_files_cache})
     return tasks
 
 
@@ -284,10 +286,10 @@ def _save_scan_cache(cache: dict) -> None:
         pass
 
 
-def load_tasks(settings: dict, today: date) -> list[dict]:
+def load_tasks(settings: dict, today: date, save_cache: bool = True) -> list[dict]:
     """单数据源：data_source == vault → load_vault；否则 internal（默认）。"""
     if settings.get("data_source") == "vault":
-        return load_vault(settings, today)
+        return load_vault(settings, today, save_cache=save_cache)
     return load_internal(today)
 
 
@@ -391,7 +393,10 @@ def main(argv: list[str] | None = None) -> int:
     today = now.date()
     sent = load_sent_json(SENT_FILE)
     s = _settings()
-    if s is None:  # settings 坏 → 阻塞 + notification(原文) 提示 + 防刷屏（T1）
+    if s is None:  # settings 坏 → 阻塞 + notification(原文) 提示 + 防刷屏（T1）；dry 零副作用只打印
+        if dry:
+            print("[todo][dry] settings.json 损坏（真跑将推 notification 并阻塞 rc=1）")
+            return 0
         key = f"{today}|settings_corrupt"
         if key not in sent:
             post_push({"type": "notification",
@@ -400,7 +405,7 @@ def main(argv: list[str] | None = None) -> int:
             sent[key] = now.strftime("%Y-%m-%d %H:%M:%S")
             save_sent_json(SENT_FILE, sent)
         return 1
-    tasks = load_tasks(s, today)
+    tasks = load_tasks(s, today, save_cache=not dry)
 
     groups = compute_reminders(tasks, now, sent)
     if dry:

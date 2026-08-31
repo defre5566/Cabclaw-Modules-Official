@@ -3,8 +3,10 @@
 调度：bridge scheduler 按 module.json 的 schedule（schedule_from_settings 联动生成）spawn，
 --phase morning|evening 区分阶段；失败 rc=1（scheduler 按 retry 配置补发）；--dry-run 零副作用。
 
-链路：worker 拼"素材文本 + 组织指令" → post_push(reminder) → push_server agent 队列
-→ agent 按 agents.md 组织成口语化文案 → 用户（话术跟随全局 AGENTS.md，本模块不定制）。
+链路：worker 拼信息条目稿（零指令：事实/要点/信息性短语） → post_push(reminder)
+→ push_render 单轮渲染（tier 人设语气润色，禁工具、不增不漏） → 用户。
+agents.md 只服务入站交互（倒计时维护/查任务），不在推送链路上；素材零指令是硬约束
+（渲染器不执行加工指令，指令会被忽略或原样念出）。
 
 数据依赖（全部由数据可得性决定，非设置项）：
 - 任务：todo 的 shared/tasks.json（读到就读，读不到就没有）
@@ -31,6 +33,7 @@ from common import (  # noqa: E402
     post_push,
     log_event,
     get_weather,
+    get_weather_snapshot,
     weather_alerts,
     get_lunar,
     get_fufu,
@@ -73,16 +76,19 @@ DEFAULT_SETTINGS = {
 
 
 def _settings() -> tuple[dict, bool]:
-    """读数据区 settings.json；坏则用默认 + 返回 corrupt=True（P8：降级 + 早报内附带提示）。"""
+    """读数据区 settings.json；不存在=首次安装正常（默认值）；存在但坏=corrupt=True（早报内附提示，P8）。"""
     s = dict(DEFAULT_SETTINGS)
+    f = DATA_DIR / "settings.json"
+    if not f.is_file():
+        return s, False
     try:
         import json
-        data = json.loads((DATA_DIR / "settings.json").read_text(encoding="utf-8"))
+        data = json.loads(f.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             s.update(data)
         return s, False
     except Exception as e:
-        log_event("WARN", "Planner", "settings_read_fail", f"{DATA_DIR / 'settings.json'}: {e}")
+        log_event("WARN", "Planner", "settings_read_fail", f"{f}: {e}")
         return s, True
 
 
@@ -217,16 +223,31 @@ def collect_countdown(today: date, prune: bool) -> list[dict]:
 
 # ---------- 简报 ----------
 
-def latest_briefing() -> Path | None:
-    """最新简报 HTML（按 mtime）；无产物返回 None。"""
+def _today_briefing(today: date) -> Path | None:
+    """今天的简报 HTML（文件名 YYYY-MM-DD.html 精确匹配，防跨天误用旧产物）。"""
+    p = BRIEFING_DIR / f"{today.isoformat()}.html"
+    return p if p.is_file() else None
+
+
+def _job_diagnosis() -> tuple[bool, str] | None:
+    """简报 job 登记诊断（bridge.jobs.job_registered 三态）；bridge 环境异常 → None（诊断不可用，不阻塞早报）。"""
     try:
-        if not BRIEFING_DIR.is_dir():
-            return None
-        files = [f for f in BRIEFING_DIR.glob("*.html")]
-        return max(files, key=lambda p: p.stat().st_mtime) if files else None
+        from bridge.jobs import job_registered
+        return job_registered("Planner")
     except Exception as e:
-        log_event("WARN", "Planner", "briefing_read_fail", f"{BRIEFING_DIR}: {e}")
+        log_event("WARN", "Planner", "job_diag_fail", str(e))
         return None
+
+
+def _push_file_with_retry(path: Path, token: str) -> bool:
+    """简报原件 file 推送：重试 3 次（间隔 3s），全失败 False。"""
+    for attempt in range(3):
+        if post_push({"type": "file", "path": str(path)}, token):
+            return True
+        if attempt < 2:
+            time.sleep(3)
+    log_event("WARN", "Planner", "file_push_fail", f"重试 3 次失败: {path}")
+    return False
 
 
 def prune_briefing() -> None:
@@ -279,26 +300,6 @@ def _weather_section() -> list[str]:
     return lines
 
 
-def _calendar_section(today: date) -> list[str]:
-    """节假日/农历/节气/三伏。"""
-    lines: list[str] = []
-    holiday = is_holiday(today)
-    if holiday:
-        lines.append(f"今天是法定节假日：{holiday}")
-    lunar = get_lunar(today)
-    if lunar.get("jieqi"):
-        lines.append(f"今日节气：{lunar['jieqi']}")
-    else:
-        lines.append(f"农历：{lunar.get('month') or ''}{lunar.get('day') or ''}")
-    fufu = get_fufu(today)
-    if fufu:
-        lines.append(f"当前三伏：{'、'.join(fufu)}")
-    jiujiu = get_jiujiu(today)
-    if jiujiu:
-        lines.append(f"当前数九：{'、'.join(jiujiu)}")
-    return lines
-
-
 def _localdata_section(settings: dict) -> list[str]:
     """花粉/台风（开关 + location 判定）。"""
     lines: list[str] = []
@@ -320,63 +321,242 @@ def _localdata_section(settings: dict) -> list[str]:
 
 # ---------- 素材拼装 ----------
 
+EVENING_TIPS = [
+    "今晚早点休息，睡前少看手机。",
+    "睡前用热水泡个脚，放松一天。",
+    "抽 20 分钟读会儿书再睡。",
+    "做几分钟伸展，缓解一天的疲劳。",
+    "把明天的事列个清单，睡得更踏实。",
+    "睡前开窗通通风，房间换换气。",
+]
+
+TEMP_SWING_THRESHOLD = 8  # 当前与未来数小时温差 ≥8°C 触发提醒
+
+
+def _address() -> str:
+    """用户称呼（web 人设页『怎么称呼你』，真源 .config/agent/identity.json）；未配置/异常返回空串。"""
+    try:
+        import json
+        from bridge.config import WORK_ROOT
+        data = json.loads((WORK_ROOT / ".config" / "agent" / "identity.json").read_text(encoding="utf-8"))
+        return str(data.get("address") or "").strip()
+    except Exception:
+        return ""
+
+
+def _greeting_head(today: date) -> str:
+    """早报问候 + 历法行（星期/农历/节气/节假日/三伏数九，事实性）。"""
+    addr = _address()
+    head = f"{addr}，早上好呀！" if addr else "早上好呀！"
+    head += f"今天是 {today.month} 月 {today.day} 日，星期{'一二三四五六日'[today.weekday()]}"
+    lunar = get_lunar(today)
+    if lunar.get("jieqi"):
+        head += f"，今日节气：{lunar['jieqi']}"
+    elif lunar.get("month") or lunar.get("day"):
+        head += f"，农历{lunar.get('month') or ''}{lunar.get('day') or ''}"
+    holiday = is_holiday(today)
+    if holiday:
+        head += f"，法定节假日：{holiday}"
+    fufu = get_fufu(today)
+    if fufu:
+        head += f"，{'、'.join(fufu)}"
+    jiujiu = get_jiujiu(today)
+    if jiujiu:
+        head += f"，{'、'.join(jiujiu)}"
+    return head + "。"
+
+
+def _evening_greeting() -> str:
+    addr = _address()
+    return f"{addr}，晚上好呀！" if addr else "晚上好呀！"
+
+
+def _temp_swing_note() -> str | None:
+    """温差提醒（事实性模板）：当前与未来数小时温差 ≥ 阈值给一句；快照不可得/温差小返回 None。"""
+    try:
+        snap = get_weather_snapshot()
+    except Exception:
+        return None
+    if not snap.get("ok"):
+        return None
+    temps = [snap.get("current", {}).get("temperature")]
+    temps += [p.get("temperature") for p in snap.get("hourly", []) if p.get("temperature") is not None]
+    temps = [t for t in temps if t is not None]
+    if len(temps) < 2:
+        return None
+    lo, hi = min(temps), max(temps)
+    if hi - lo < TEMP_SWING_THRESHOLD:
+        return None
+    return f"今日温差较大（{lo}~{hi}°C），注意增减衣物。"
+
+
+def _briefing_summary(path: Path) -> str | None:
+    """简报要点文本（HTML 同名 .summary.txt，简报生成任务产出）；缺失返回 None。"""
+    p = path.with_suffix(".summary.txt")
+    try:
+        return p.read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def _briefing_section(briefing: Path, resend_note: bool = False) -> str:
+    """简报段（要点来自 summary 文本，缺失降级为一句话；均不阻塞）。"""
+    prefix = "信息简报要点（早报时段未送达，晚报补发）：\n" if resend_note else "信息简报要点：\n"
+    summary = _briefing_summary(briefing)
+    if summary:
+        return prefix + summary + "\n简报原文文件随后单独发送。"
+    note = "今日信息简报已生成（早报时段未送达），原文文件随后单独发送。" if resend_note \
+        else "今日信息简报已生成，原文文件随后单独发送。"
+    return note
+
+
+def _tasks_stale() -> bool:
+    """todo shared 层新鲜度：超 25h 未刷新视为过期（todo 每 1m 刷新）。"""
+    data = shared_load("tasks")
+    ts = data.get("ts") if isinstance(data, dict) else 0
+    try:
+        return not ts or time.time() - float(ts) > 25 * 3600
+    except (TypeError, ValueError):
+        return True
+
+
+def fmt_overdue(tasks: list[dict]) -> str:
+    """逾期原文行（text＋到期日一体，时间/标签空格分隔）。"""
+    lines = []
+    for t in tasks:
+        text = str(t.get("text") or "")
+        due = str(t.get("due") or "")
+        if due:
+            try:
+                d = date.fromisoformat(due)
+                text += f"（{d.month} 月 {d.day} 日到期）"
+            except ValueError:
+                text += f"（{due} 到期）"
+        parts = [text]
+        if t.get("time"):
+            parts.append(f"⏰ {t['time']}")
+        if t.get("tags"):
+            parts.append(f"#{' #'.join(map(str, t['tags']))}")
+        lines.append(f"- {' '.join(parts)}")
+    return "\n".join(lines)
+
+
+def _countdown_lines(countdown: list[dict], due_today_phrase: bool = True) -> str:
+    """倒计时条目行（信息性短语）：当天「今天是X的时候了」，未到「X还有 N 天，该准备了」。"""
+    lines = []
+    for c in countdown:
+        if c["days"] == 0:
+            lines.append(f"今天是{c['name']}的时候了")
+        else:
+            tail = "，该准备了" if due_today_phrase else ""
+            lines.append(f"{c['name']}还有 {c['days']} 天{tail}")
+    return "；".join(lines)
+
+
+def _closing_hint_morning(tasks: dict, countdown: list[dict], swing: str | None) -> str | None:
+    """早报收尾提示（方向句，渲染层结合素材生成一句收尾；命中才拼，无事不硬凑）。
+    优先级：逾期 > 倒计时当天 > 温差。"""
+    if tasks["overdue"]:
+        return "收尾提示：结合逾期任务提醒用户今天处理掉，语气轻松不施压"
+    if any(c["days"] == 0 for c in countdown):
+        return "收尾提示：结合今天的事项给用户一句打气的收尾"
+    if swing:
+        return "收尾提示：结合温差关照用户增减衣物"
+    return None
+
+
+def _closing_hint_evening(tasks: dict) -> str:
+    """晚报收尾提示：按完成情况选方向。"""
+    if tasks["today"]:
+        return "收尾提示：温和提醒未完成项明天继续，不指责"
+    if tasks["done_today"]:
+        return "收尾提示：肯定用户今天的完成情况，轻松收尾"
+    return "收尾提示：关照用户好好休息"
+
 def morning(today: date, dry: bool) -> int:
     sent = load_sent_json(MORNING_SENT)
-    if sent.get(today.isoformat()):
+    if not dry and sent.get(today.isoformat()):
         return 0
     settings, settings_corrupt = _settings()
 
     tasks = collect_tasks(today)
     countdown = collect_countdown(today, prune=not dry)
-    briefing = latest_briefing() if settings.get("briefing_on") else None
+    briefing_on = bool(settings.get("briefing_on"))
+    briefing = _today_briefing(today) if briefing_on else None
+    attempt_key = f"{today.isoformat()}|attempt"
 
-    material: list[str] = ["【晨间早报素材】"]
+    # 简报未就绪兜底（briefing_on 且今天无产物）：诊断 job 三态 → 等待(rc=1 走 retry) / 标注照发。
+    # 等待次数上限取部署 retry.max（settings.json，缺省 3），推送失败与等待共享 retry 预算。
+    briefing_note = ""
+    if briefing_on and briefing is None:
+        if dry:
+            diag = _job_diagnosis()
+            if diag is None:
+                briefing_note = "（信息简报今日未生成：任务状态诊断不可用）"
+            elif not diag[0]:
+                briefing_note = f"（信息简报今日未生成：{diag[1]}；可在模块设置页重新保存以触发任务重登记）"
+            else:
+                briefing_note = "（信息简报今日未生成：简报任务已登记但未就绪，真跑将等待 retry 补发，超次后保底发送）"
+        else:
+            diag = _job_diagnosis()
+            if diag is None:
+                briefing_note = "（信息简报今日未生成：任务状态诊断不可用，已跳过简报段）"
+            elif not diag[0]:
+                briefing_note = f"（信息简报今日未生成：{diag[1]}；可在模块设置页重新保存以触发任务重登记）"
+            else:
+                wait_limit = int((settings.get("retry") or {}).get("max") or 3)
+                waited = int(sent.get(attempt_key) or 0)
+                if waited < wait_limit:
+                    sent[attempt_key] = waited + 1
+                    save_sent_json(MORNING_SENT, sent)
+                    log_event("INFO", "Planner", "briefing_wait",
+                              f"简报任务已登记但未就绪，等待 {waited + 1}/{wait_limit}（rc=1 走 retry 补发）")
+                    return 1
+                briefing_note = ("（信息简报今日未生成：任务已登记但等待多轮仍未就绪，"
+                                 "可能是网络或检索故障，可在后台查看简报任务日志）")
+
+    material: list[str] = []
     if settings_corrupt:
-        material.append("⚠️ 配置文件 settings.json 异常，已用默认设置，请检查")
+        material.append("（系统提示：配置读取异常，本次按默认设置生成，请检查 settings.json）")
 
-    # 1. 天气 + 预警
+    # 1. 问候 + 历法（信息条目，语气归渲染层）
+    material.append(_greeting_head(today))
+
+    # 2. 天气 + 预警（预警带建议）
     material.extend(_weather_section())
 
-    # 2. 节假日/农历
-    cal = _calendar_section(today)
-    if cal:
-        material.append("；".join(cal))
+    # 3. 温差提醒（快照可得且温差大时）
+    swing = _temp_swing_note()
+    if swing:
+        material.append(swing)
 
-    # 3. 倒计时/纪念日
+    # 4. 倒计时/纪念日
     if countdown:
-        lines = [f"{c['name']}" + ("就是今天" if c["days"] == 0 else f"还有 {c['days']} 天") for c in countdown]
-        material.append("倒计时/纪念日：" + "；".join(lines))
+        material.append("倒计时：" + _countdown_lines(countdown) + "。")
 
-    # 4. 逾期（提前，催处理）
+    # 5. 逾期
     if tasks["overdue"]:
-        material.append(
-            f"已逾期 {len(tasks['overdue'])} 条（原文如下，全部列出一条不漏，请尽快处理）：\n"
-            + fmt_tasks(tasks["overdue"])
-        )
+        material.append(f"已逾期 {len(tasks['overdue'])} 条，记得尽快处理：\n" + fmt_overdue(tasks["overdue"]))
 
-    # 5. 今日待办
-    material.append(
-        "今日计划内任务（原文如下，按时间先后、优先级；为已存任务，或不含最新新增，todo 未运行时可能不全）：\n"
-        + (fmt_tasks(tasks["today"]) if tasks["today"] else "（今天没有明确截止的待办）")
-    )
+    # 6. 今日待办
+    if tasks["today"]:
+        material.append(f"今天有 {len(tasks['today'])} 件事：\n" + fmt_tasks(tasks["today"]))
+    else:
+        material.append("今天没有明确截止的待办。")
+    if _tasks_stale():
+        material.append("（todo 数据未更新，以上任务可能不全）")
 
-    # 6. 简报要点（附原文文件）
+    # 7. 简报要点 / 未生成说明
     if briefing:
-        material.append(
-            f"信息简报：请阅读 {briefing} 挑热度高/影响大的要点说几句（不要二次摘要、不要代做判断），"
-            "简报原文文件随后单独发送。"
-        )
+        material.append(_briefing_section(briefing))
+    elif briefing_note:
+        material.append(briefing_note)
 
-    # 7. 收尾 + 组织指令
-    material.append(
-        "请按早报风格组织成一条口语化消息：问候 + 天气（带穿衣/带伞等提醒）"
-        + (" + 节假日/农历" if cal else "")
-        + (" + 倒计时/纪念日（该准备了）" if countdown else "")
-        + (" + 逾期（一条不漏全部列出，催尽快处理）" if tasks["overdue"] else "")
-        + " + 今日待办（先列原文，再说建议）"
-        + (" + 简报要点" if briefing else "")
-        + " + 一句鼓励。要求：多用 emoji 让消息活泼不生硬；话术自由发挥，自然连贯，不要逐段罗列。"
-    )
+    # 8. 收尾提示（末行；渲染层按其方向结合素材生成一句收尾，不播报该行）
+    hint = _closing_hint_morning(tasks, countdown, swing)
+    if hint:
+        material.append(hint)
+
     text = "\n".join(material)
 
     if dry:
@@ -388,22 +568,19 @@ def morning(today: date, dry: bool) -> int:
     token = load_token(MODULE_DIR)
     ok = post_push({"type": "reminder", "text": text}, token)
 
-    # 简报原件 file 双发：重试 3 次；仍失败 → 早报补一句说明，不记已发（次日补发兜底）
+    # 简报原件 file 双发（重试 3 次）；仍失败 → 早报补一句说明，不记已发（待补发兜底）
     file_ok = True
     if briefing:
-        for attempt in range(3):
-            if post_push({"type": "file", "path": str(briefing)}, token):
-                break
-            if attempt < 2:
-                time.sleep(3)
-        else:
-            file_ok = False
-            log_event("WARN", "Planner", "file_push_fail", f"重试 3 次失败: {briefing}")
+        file_ok = _push_file_with_retry(briefing, token)
+        if not file_ok:
             post_push({"type": "reminder",
-                       "text": f"（简报原件发送失败，请稍后查看 {briefing}）"}, token)
+                       "text": "（简报原件发送失败，请稍后在管理后台查看）"}, token)
 
     if ok and file_ok:
         sent[today.isoformat()] = time.time()
+        if briefing:
+            sent[f"{today.isoformat()}|briefing"] = time.time()  # 晚报兜底判定标记：简报已随早报送达
+        sent.pop(attempt_key, None)  # 等待计数使命完成
         save_sent_json(MORNING_SENT, sent)
         return 0
 
@@ -413,36 +590,74 @@ def morning(today: date, dry: bool) -> int:
 
 def evening(today: date, dry: bool) -> int:
     sent = load_sent_json(EVENING_SENT)
-    if sent.get(today.isoformat()):
+    if not dry and sent.get(today.isoformat()):
         return 0
     settings, settings_corrupt = _settings()
 
     tasks = collect_tasks(today)
     countdown = collect_countdown(today, prune=not dry)
+    briefing_on = bool(settings.get("briefing_on"))
 
-    material: list[str] = ["【晚间复盘素材】"]
+    # 晚报简报兜底：早报没带成简报（MORNING_SENT 无 <date>|briefing 标记）且今天的简报已生成
+    # → 晚报补简报段 + 原件附发（简报最晚当天送达，不静默丢失）
+    briefing = None
+    if briefing_on:
+        b = _today_briefing(today)
+        if b is not None and not load_sent_json(MORNING_SENT).get(f"{today.isoformat()}|briefing"):
+            briefing = b
+
+    material: list[str] = []
     if settings_corrupt:
-        material.append("⚠️ 配置文件 settings.json 异常，已用默认设置，请检查")
-    material.append("今日已完成（原文如下）：\n" + (fmt_tasks(tasks["done_today"]) if tasks["done_today"] else "（今天还没有打勾完成的任务）"))
-    material.append("今日未完成（原文如下）：\n" + (fmt_tasks(tasks["today"]) if tasks["today"] else "（今天到期的都办完了）"))
+        material.append("（系统提示：配置读取异常，本次按默认设置生成，请检查 settings.json）")
 
+    # 1. 问候
+    material.append(_evening_greeting())
+
+    # 2. 今日完成
+    if tasks["done_today"]:
+        material.append(f"今天完成 {len(tasks['done_today'])} 件：\n" + fmt_tasks(tasks["done_today"]))
+    else:
+        material.append("今天还没有打勾完成的任务。")
+
+    # 3. 今日未完成
+    if tasks["today"]:
+        material.append(f"还有 {len(tasks['today'])} 件今日任务未完成：\n" + fmt_tasks(tasks["today"]))
+    else:
+        material.append("今天到期的都办完了。")
+
+    # 4. 倒计时/纪念日
     if countdown:
-        lines = [f"{c['name']}" + ("就是今天" if c["days"] == 0 else f"还有 {c['days']} 天") for c in countdown]
-        material.append("提醒：明天前要准备的倒计时/纪念日：" + "；".join(lines))
+        material.append("倒计时：" + _countdown_lines(countdown, due_today_phrase=False) + "。")
 
-    material.append(
-        "请按晚间风格组织成一条口语化复盘：问候 + 今日完成情况（先列原文，再说建议）+ 未完成情况（先列原文）"
-        + " + 按完成度给鼓励或提醒"
-        + " + 晚间建议（通用化指引：如早睡、泡脚、读 30 分钟书，不写具体私人化例子）。"
-        "要求：多用 emoji 让消息活泼不生硬；话术自由发挥。"
-    )
+    # 5. 简报兜底（早报时段未送达，晚报补发）
+    if briefing:
+        material.append(_briefing_section(briefing, resend_note=True))
+
+    # 6. 晚间建议（内置池按年积日轮换）
+    material.append(EVENING_TIPS[today.timetuple().tm_yday % len(EVENING_TIPS)])
+
+    # 7. 收尾提示（末行；渲染层按其方向结合素材生成一句收尾，不播报该行）
+    material.append(_closing_hint_evening(tasks))
+
     text = "\n".join(material)
 
     if dry:
         print(f"[Planner][dry] evening 素材:\n{text}")
+        if briefing:
+            print(f"[Planner][dry] 将发送简报文件: {briefing}")
         return 0
 
-    if post_push({"type": "reminder", "text": text}, load_token(MODULE_DIR)):
+    token = load_token(MODULE_DIR)
+    ok = post_push({"type": "reminder", "text": text}, token)
+
+    file_ok = True
+    if briefing:
+        file_ok = _push_file_with_retry(briefing, token)
+        if not file_ok:
+            post_push({"type": "reminder",
+                       "text": "（简报原件发送失败，请稍后在管理后台查看）"}, token)
+
+    if ok and file_ok:
         sent[today.isoformat()] = time.time()
         save_sent_json(EVENING_SENT, sent)
         return 0

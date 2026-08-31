@@ -1,5 +1,6 @@
 {
   "name": "todo",
+  "bridge_compat": ["0.1"],
   "purpose": "待办提醒：按到期时刻推送提醒，支持内置数据源与 Obsidian 库（单数据源可切换，共享层统一）",
   "spec": "规范.md",
   "schedule": [

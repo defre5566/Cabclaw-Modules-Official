@@ -1,5 +1,6 @@
 {
   "name": "Planner",
+  "bridge_compat": ["0.1"],
   "purpose": "早晚报聚合模块（晨间早报 + 晚间复盘）：聚合任务/天气/节假日/倒计时/简报，agent 加工成口语化文案",
   "spec": "规范.md",
   "schedule_from_settings": [
