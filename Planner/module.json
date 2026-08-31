@@ -23,43 +23,45 @@
   "settings_schema": [
     {
       "section": "早晚报",
-      "desc": "总开关与推送时刻。关闭总开关后早晚报都不推送；晚报可单独关闭。",
+      "desc": "总开关与推送时刻；晚报可单独关闭。",
       "fields": [
         {
           "key": "planner_on",
           "type": "boolean",
           "default": true,
-          "desc": "早晚报总开关（关闭后早晚报都不推送）"
+          "label": "早晚报总开关"
         },
         {
           "key": "morning_time",
           "type": "string",
           "default": "08:30",
-          "desc": "早报推送时刻（HH:MM）"
+          "label": "早报时刻 （如 08:30）"
         },
         {
           "key": "evening_on",
           "type": "boolean",
           "default": true,
-          "desc": "晚报独立开关（可单独关闭晚间复盘）"
+          "label": "晚报开关",
+          "desc": "可单独关闭晚间复盘"
         },
         {
           "key": "evening_time",
           "type": "string",
           "default": "21:00",
-          "desc": "晚报推送时刻（HH:MM）"
+          "label": "晚报时刻 （如 21:00）"
         }
       ]
     },
     {
       "section": "信息简报",
-      "desc": "简报 = 每日按所选方向生成 HTML 信息简报（早报时刻前 5 分钟自动生成；早报附要点与原文文件）。预设方向只读，自定义方向在网页导入。",
+      "desc": "每日按所选方向生成信息简报，早报前 5 分钟自动生成并附要点与原文文件；预设方向只读，自定义方向在网页导入。",
       "fields": [
         {
           "key": "briefing_on",
           "type": "boolean",
           "default": false,
-          "desc": "简报开关（关闭后简报不生成、早报不带简报段）"
+          "label": "简报开关",
+          "desc": "关闭后不再生成简报，早报不带简报段"
         },
         {
           "key": "briefing_topics",
@@ -68,26 +70,29 @@
           "default": [
             "热点"
           ],
-          "desc": "简报方向（最多 3 个）"
+          "label": "简报方向",
+          "desc": "最多选 3 个"
         }
       ]
     },
     {
       "section": "地方性数据",
-      "desc": "花粉/台风按你的位置自动显示（内蒙古显示花粉开关，沿海省份显示台风开关）。",
+      "desc": "按位置自动显示对应开关：内蒙古显示花粉，沿海省份显示台风。",
       "fields": [
         {
           "key": "pollen_on",
           "type": "boolean",
           "default": false,
-          "desc": "花粉浓度开关（仅内蒙古生效）",
+          "label": "花粉浓度",
+          "desc": "仅内蒙古生效",
           "show_when_service": "pollen"
         },
         {
           "key": "typhoon_on",
           "type": "boolean",
           "default": false,
-          "desc": "台风动态开关（仅沿海省份生效）",
+          "label": "台风动态",
+          "desc": "仅沿海省份生效",
           "show_when_service": "typhoon"
         }
       ]
