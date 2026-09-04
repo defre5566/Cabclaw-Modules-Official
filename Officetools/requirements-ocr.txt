@@ -1,0 +1,2 @@
+rapidocr==3.9.2
+pypdfium2==5.13.0

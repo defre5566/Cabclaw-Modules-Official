@@ -1,0 +1,81 @@
+{
+  "name": "Officetools",
+  "bridge_compat": ["0.1"],
+  "purpose": "文档解读能力：pdf/office/图片解析为概览+全文 markdown，产物供 agent 承接具体需求",
+  "spec": "spec.md",
+  "schedule": [
+    {"every": "5m", "args": ["--bootstrap-check"]}
+  ],
+  "inbound": {
+    "intents": ["解读", "[收到file"],
+    "scope": "all",
+    "priority": 0
+  },
+  "retry": {
+    "interval_seconds": 300,
+    "max": 2
+  },
+  "settings_schema": [
+    {
+      "section": "解析能力",
+      "desc": "OCR 层与自动解读开关；变更在守护周期（5 分钟内）自动生效。",
+      "fields": [
+        {
+          "key": "ocr_on",
+          "type": "boolean",
+          "default": false,
+          "label": "OCR 层（扫描件/图片识别）",
+          "desc": "开启后守护周期自动安装 OCR 组件（约 200MB），关闭只停用不卸载"
+        },
+        {
+          "key": "file_auto_on",
+          "type": "boolean",
+          "default": false,
+          "label": "文件到达自动解读",
+          "desc": "开启后收到文件即自动解析并回概览（助手将不再感知该文件消息）；关闭则说“解读”触发"
+        }
+      ]
+    },
+    {
+      "section": "解析限制",
+      "desc": "防大文件拖垮解析（微信端发送上限与网络下载超时由微信/SDK 决定）。",
+      "fields": [
+        {
+          "key": "max_file_mb",
+          "type": "number",
+          "default": 200,
+          "label": "文件大小上限 (MB)"
+        },
+        {
+          "key": "max_pages",
+          "type": "number",
+          "default": 300,
+          "label": "PDF 解析页数上限"
+        },
+        {
+          "key": "ocr_max_pages",
+          "type": "number",
+          "default": 20,
+          "label": "单次 OCR 页数上限"
+        }
+      ]
+    },
+    {
+      "section": "输出",
+      "fields": [
+        {
+          "key": "overview_max_chars",
+          "type": "number",
+          "default": 800,
+          "label": "概览字数上限"
+        },
+        {
+          "key": "retention_days",
+          "type": "number",
+          "default": 7,
+          "label": "产物保留天数"
+        }
+      ]
+    }
+  ]
+}
