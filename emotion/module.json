@@ -1,0 +1,95 @@
+{
+  "name": "emotion",
+  "bridge_compat": ["0.1"],
+  "purpose": "拟人化主动关心（人设拓展）：时段问候/天气/倾听陪伴 + 任务三阶段轻量鼓励",
+  "spec": "spec.md",
+  "schedule": [
+    {
+      "window": {
+        "hours": "8-21",
+        "offset": "random-5-50"
+      }
+    }
+  ],
+  "schedule_from_settings": [
+    {
+      "phase": "morning",
+      "time_field": "report_morning",
+      "enabled_field": "tasks_report_on"
+    },
+    {
+      "phase": "midday",
+      "time_field": "report_midday",
+      "enabled_field": "tasks_report_on"
+    },
+    {
+      "phase": "evening",
+      "time_field": "report_evening",
+      "enabled_field": "tasks_report_on"
+    }
+  ],
+  "inbound": {
+    "intents": ["暂停关心", "恢复关心", "我累了", "好累", "感冒了", "不舒服"],
+    "scope": "all",
+    "priority": 10
+  },
+  "retry": null,
+  "settings_schema": [
+    {
+      "section": "拟人关心",
+      "desc": "主动关心的节奏控制；错过窗口不补发。",
+      "fields": [
+        {
+          "key": "emotion_on",
+          "type": "boolean",
+          "default": true,
+          "label": "拟人关心总开关"
+        },
+        {
+          "key": "daily_limit",
+          "type": "number",
+          "default": 4,
+          "label": "每日最多条数",
+          "desc": "拟人关心每日推送上限，任务播报不占此配额"
+        },
+        {
+          "key": "min_interval_hours",
+          "type": "number",
+          "default": 3,
+          "label": "最小间隔（小时）",
+          "desc": "两条推送之间的最小间隔，含任务播报后的退避"
+        }
+      ]
+    },
+    {
+      "section": "任务播报",
+      "desc": "按设置时刻做轻量任务鼓励（不罗列清单）。需安装 todo 模块；无任务数据时自动跳过。",
+      "fields": [
+        {
+          "key": "tasks_report_on",
+          "type": "boolean",
+          "default": true,
+          "label": "任务播报开关"
+        },
+        {
+          "key": "report_morning",
+          "type": "string",
+          "default": "09:00",
+          "label": "上午播报时刻"
+        },
+        {
+          "key": "report_midday",
+          "type": "string",
+          "default": "14:00",
+          "label": "下午播报时刻"
+        },
+        {
+          "key": "report_evening",
+          "type": "string",
+          "default": "18:00",
+          "label": "傍晚播报时刻"
+        }
+      ]
+    }
+  ]
+}

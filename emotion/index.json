@@ -1,0 +1,10 @@
+{
+  "module": "emotion",
+  "entries": [
+    {
+      "kw": ["暂停关心", "恢复关心", "emotion", "主动关心", "倾听", "情绪"],
+      "file": "modules/emotion/agents.md",
+      "title": "emotion 操作指引"
+    }
+  ]
+}

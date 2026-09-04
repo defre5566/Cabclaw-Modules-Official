@@ -47,6 +47,53 @@
         "python": ">=3.11"
       },
       "sha256": "4a6315b87184fe9fd5e6b7af26dd474cd4708d9e7a79f47d9c1c6eb357bd782e"
+    },
+    {
+      "name": "emotion",
+      "version": "0.1.1",
+      "purpose": "拟人化主动关心（人设拓展）：时段问候/天气/倾听陪伴 + 任务三阶段轻量鼓励",
+      "data_sources": [
+        "internal",
+        "shared"
+      ],
+      "files": [
+        "module.json",
+        "emotion_worker.py",
+        "spec.md",
+        "agents.md",
+        "index.json",
+        "README.md",
+        "LICENSE"
+      ],
+      "requires": {
+        "python": ">=3.11"
+      },
+      "sha256": "53b0d3c9171f1cc454a45c7a41e59a82a97358dde6532b322379cdeeb55b9425"
+    },
+    {
+      "name": "Officetools",
+      "version": "0.1.0",
+      "purpose": "文档解读能力：pdf/office/图片解析为概览+全文 markdown，产物供 agent 承接具体需求",
+      "data_sources": [
+        "shared"
+      ],
+      "files": [
+        "module.json",
+        "officetools_worker.py",
+        "parsers.py",
+        "bootstrap.py",
+        "spec.md",
+        "agents.md",
+        "index.json",
+        "README.md",
+        "requirements.txt",
+        "requirements-ocr.txt",
+        "tests/"
+      ],
+      "requires": {
+        "python": ">=3.11"
+      },
+      "sha256": "8efd0f1136ab9e31283f1e665911129d383aaebc4e3a0c207ff89fccf6a7b32d"
     }
   ]
 }
