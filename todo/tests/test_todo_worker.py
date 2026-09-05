@@ -361,3 +361,83 @@ def test_vault_dry_no_scan_cache_write():
     assert tasks and tw.SCAN_CACHE_FILE.exists() is False   # dry 不写缓存
     tasks = tw.load_vault(settings, TODAY, save_cache=True)
     assert tasks and tw.SCAN_CACHE_FILE.exists()            # 正常写缓存
+
+
+# ---------- vault 递归扫描 / 错配检测 ----------
+
+def test_vault_scan_recursive_subdir():
+    """递归扫描：任务在子目录也能读到（Tasks 用户任务散落库内任意位置）。"""
+    tmp = Path(tempfile.mkdtemp())
+    _mk(tmp)
+    vault = tmp / "vault"
+    (vault / "sub" / "notes.md").parent.mkdir(parents=True)
+    (vault / "sub" / "notes.md").write_text(f"- [ ] 买菜 📅 {TODAY} ⏰ 09:00\n")
+    tasks = tw.load_vault({"vault_path": str(vault), "tag_prefix": "", "extract_tags": True}, TODAY)
+    assert [t["text"] for t in tasks] == ["买菜"]
+
+
+def test_vault_scan_ignores_hidden():
+    """隐藏文件（.agent.md）与隐藏目录（.hidden/）不参与扫描。"""
+    tmp = Path(tempfile.mkdtemp())
+    _mk(tmp)
+    vault = tmp / "vault"
+    vault.mkdir()
+    (vault / ".agent.md").write_text(f"- [ ] 隐藏文件任务 📅 {TODAY} ⏰ 09:00\n")
+    (vault / ".hidden").mkdir()
+    (vault / ".hidden" / "x.md").write_text(f"- [ ] 隐藏目录任务 📅 {TODAY} ⏰ 09:00\n")
+    tasks = tw.load_vault({"vault_path": str(vault), "tag_prefix": "", "extract_tags": True}, TODAY)
+    assert tasks == []
+
+
+def test_check_source_mismatch_vault_with_internal():
+    """vault 模式 + internal tasks/*.json 非空 → 错配 True。"""
+    tmp = Path(tempfile.mkdtemp())
+    _mk(tmp)
+    _write([_task("a", TODAY.isoformat(), "14:00")])
+    assert tw.check_source_mismatch({"data_source": "vault"}) is True
+
+
+def test_check_source_mismatch_no_flags():
+    """internal 模式 / vault 模式无 internal 文件 / internal 文件空 → 不告警。"""
+    tmp = Path(tempfile.mkdtemp())
+    _mk(tmp)
+    assert tw.check_source_mismatch({"data_source": "vault"}) is False      # internal 无文件
+    assert tw.check_source_mismatch({"data_source": "internal"}) is False
+    (tw.TASKS_DIR / "2026-08.json").write_text(json.dumps({"tasks": []}))
+    assert tw.check_source_mismatch({"data_source": "vault"}) is False      # 空 tasks 不告警
+
+
+def test_main_vault_mode_mismatch_notify_once(monkeypatch):
+    """vault 模式 + internal 非空 → main 推一次性 notification；再跑不重复推。"""
+    tmp = Path(tempfile.mkdtemp())
+    ctx = _mk(tmp)
+    ctx["pushes"] = []
+    tw.post_push = lambda body, token: (ctx["pushes"].append(body), True)[1]
+    tw.SETTINGS_FILE = tmp / "settings.json"
+    tw.SETTINGS_FILE.write_text(json.dumps({"data_source": "vault", "vault_path": str(tmp / "vault"),
+                                            "vault_task_dir": ""}))
+    (tmp / "vault").mkdir()
+    _write([_task("a", TODAY.isoformat(), "14:00")])
+    _fixed_now(monkeypatch)
+    assert tw.main([]) == 0
+    notes = [b for b in ctx["pushes"] if b["type"] == "notification"]
+    assert len(notes) == 1 and "内置数据源任务文件" in notes[0]["text"]
+    assert tw.main([]) == 0
+    assert len([b for b in ctx["pushes"] if b["type"] == "notification"]) == 1  # 防刷屏
+
+
+def test_main_vault_mode_mismatch_dry_no_push(monkeypatch):
+    """错配 + dry → rc=0、零推送、不写 sent。"""
+    tmp = Path(tempfile.mkdtemp())
+    ctx = _mk(tmp)
+    ctx["pushes"] = []
+    tw.post_push = lambda body, token: (ctx["pushes"].append(body), True)[1]
+    tw.SETTINGS_FILE = tmp / "settings.json"
+    tw.SETTINGS_FILE.write_text(json.dumps({"data_source": "vault", "vault_path": str(tmp / "vault"),
+                                            "vault_task_dir": ""}))
+    (tmp / "vault").mkdir()
+    _write([_task("a", TODAY.isoformat(), "14:00")])
+    _fixed_now(monkeypatch)
+    assert tw.main(["--dry-run"]) == 0
+    assert ctx["pushes"] == []
+    assert not tw.SENT_FILE.exists()

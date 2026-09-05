@@ -3,7 +3,7 @@
   "modules": [
     {
       "name": "todo",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "purpose": "待办提醒：按到期时刻推送提醒，支持内置数据源与 Obsidian 库",
       "data_sources": [
         "internal",
@@ -22,7 +22,7 @@
       "requires": {
         "python": ">=3.11"
       },
-      "sha256": "2c2607a18239ade95944e71de6b932e8d0cd27d65012e5fe5d61f65ae5dc9c6a"
+      "sha256": "2d432cf99821262dc49bd70d9731296f7c390f1bc8cd4bea6b00b14f4d4ed8ad"
     },
     {
       "name": "Planner",

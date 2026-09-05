@@ -38,6 +38,7 @@ DEFAULT_TAGS = ["工作", "学习", "生活", "家庭", "购物", "健康", "娱
 DEFAULT_SETTINGS = {
     "data_source": "internal",
     "vault_path": "",
+    "vault_task_dir": "",
     "tags_vocab": DEFAULT_TAGS,
     "allow_new_tag": False,
     "extract_tags": True,
@@ -182,7 +183,7 @@ def _from_parsed(pt, today: date) -> dict:
 
 
 def load_vault(settings: dict, today: date, save_cache: bool = True) -> list[dict]:
-    """vault 模式：扫描 vault_path 下所有 .md 的 Tasks 任务行；带日期（📅）才算 todo。
+    """vault 模式：递归扫描 vault_path 下所有 .md（**/*.md，排除隐藏文件）的 Tasks 任务行；带日期（📅）才算 todo。
 
     增量优化：按文件 mtime 缓存 scan_cache.json，mtime 没变用缓存的解析结果（重算 reminder_date），
     变了才重新解析。缓存坏则全量重扫重建。tag_prefix：设置的前缀（含 #）；留空 = 不提取。
@@ -206,7 +207,9 @@ def load_vault(settings: dict, today: date, save_cache: bool = True) -> list[dic
     tasks: list[dict] = []
     seen: set[str] = set()
 
-    for path in sorted(vault.glob("*.md")):
+    for path in sorted(vault.glob("**/*.md")):
+        if any(part.startswith(".") for part in path.relative_to(vault).parts):
+            continue  # 隐藏文件/目录（.agent.md / .trash/ 等）非任务载体
         abs_path = str(path)
         try:
             mtime = path.stat().st_mtime
@@ -291,6 +294,24 @@ def load_tasks(settings: dict, today: date, save_cache: bool = True) -> list[dic
     if settings.get("data_source") == "vault":
         return load_vault(settings, today, save_cache=save_cache)
     return load_internal(today)
+
+
+def check_source_mismatch(settings: dict) -> bool:
+    """vault 模式 + internal tasks/*.json 非空 → 错配（agent 写错位置，任务不会被提醒）。"""
+    if settings.get("data_source") != "vault":
+        return False
+    if not TASKS_DIR.is_dir():
+        return False
+    for path in sorted(TASKS_DIR.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(data, dict):
+            data = data.get("tasks", [])
+        if isinstance(data, list) and data:
+            return True
+    return False
 
 
 # ---------- repeat 机器展开 ----------
@@ -405,6 +426,19 @@ def main(argv: list[str] | None = None) -> int:
             sent[key] = now.strftime("%Y-%m-%d %H:%M:%S")
             save_sent_json(SENT_FILE, sent)
         return 1
+    if check_source_mismatch(s):
+        if dry:
+            print("[todo][dry] 检测到 vault 模式下存在内置数据源任务文件（任务不会被提醒，请检查写入位置）")
+        else:
+            log_event("WARN", "todo", "source_mismatch",
+                      "vault 模式下 modules_data/todo/tasks/ 存在非空任务文件，不会被提醒")
+            key = f"{today}|source_mismatch"
+            if key not in sent:
+                post_push({"type": "notification",
+                           "text": "（原文）todo：检测到 vault 模式下存在内置数据源任务文件，任务不会被提醒，请让 agent 处理"},
+                          load_token(MODULE_DIR))
+                sent[key] = now.strftime("%Y-%m-%d %H:%M:%S")
+                save_sent_json(SENT_FILE, sent)
     tasks = load_tasks(s, today, save_cache=not dry)
 
     groups = compute_reminders(tasks, now, sent)

@@ -44,6 +44,15 @@
           "required_when": {
             "data_source": "vault"
           }
+        },
+        {
+          "key": "vault_task_dir",
+          "type": "string",
+          "default": "",
+          "desc": "任务写入目录（绝对路径或以 ~ 开头；留空 = vault_path 下自动建 wechat-claw-todo/）。文件固定 todo-YYYY-MM.md，当月存在则追加。建议在库内",
+          "show_when": {
+            "data_source": "vault"
+          }
         }
       ]
     },
