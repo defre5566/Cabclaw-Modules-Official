@@ -101,13 +101,18 @@ def load_tasks() -> list[dict]:
     return [t for t in tasks if isinstance(t, dict)] if isinstance(tasks, list) else []
 
 
+def _is_completed(t: dict) -> bool:
+    """历史已完成判定：done 真 / done_at 存在 / done_dates 非空——collect_tasks 先按此排除。"""
+    return bool(t.get("done") or t.get("done_at") or t.get("done_dates"))
+
+
 def _is_done(t: dict, today: date) -> bool:
-    """完成判定：done_at 今天 / done_dates 含今天（重复任务）/ done（旧数据兜底）。"""
+    """今日完成判定（仅用于 done_today 归组）：done_dates 含今天 / done_at 今天。"""
     if t.get("done_dates"):
-        return today.isoformat() in t.get("done_dates") or []
+        return today.isoformat() in t["done_dates"]
     if t.get("done_at"):
         return str(t["done_at"]).startswith(today.isoformat())
-    return bool(t.get("done"))
+    return False  # 仅 done 真、无完成时间的旧数据：不误报逾期，也不算今日完成
 
 
 def _due_date(t: dict) -> date | None:
@@ -123,14 +128,17 @@ def _task_time(t: dict) -> str:
 
 
 def collect_tasks(today: date) -> dict:
-    """任务分组：today（今日待办）/ overdue（逾期）/ done_today（今日完成）。"""
+    """任务分组：today（今日待办）/ overdue（逾期）/ done_today（今日完成）。
+
+    先按 _is_completed 排除历史已完成，再按 _is_done 归组今日完成（issue #2）。
+    """
     out = {"today": [], "overdue": [], "done_today": []}
     for t in load_tasks():
-        due = _due_date(t)
-        if _is_done(t, today):
-            if (t.get("done_at") and str(t["done_at"]).startswith(today.isoformat()))                     or (t.get("done_dates") and today.isoformat() in t["done_dates"]):
+        if _is_completed(t):
+            if _is_done(t, today):
                 out["done_today"].append(t)
             continue
+        due = _due_date(t)
         if due is None:
             continue
         if due == today:

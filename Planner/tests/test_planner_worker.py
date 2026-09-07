@@ -100,6 +100,22 @@ def test_collect_tasks_no_data():
     assert pw.collect_tasks(TODAY) == {"today": [], "overdue": [], "done_today": []}
 
 
+def test_collect_tasks_historical_done_not_overdue():
+    """历史已完成任务不进 overdue（issue #2）：done_at 为过去日期 / 仅 done 真。"""
+    tmp = Path(tempfile.mkdtemp())
+    ctx = _mk(tmp)
+    hist = (TODAY - timedelta(days=30)).isoformat()
+    tasks = [
+        _task("h", YDAY.isoformat(), done=True, done_at=f"{hist}T09:00:00"),  # 历史完成（done_at 过去）
+        _task("x", YDAY.isoformat(), done=True, done_at=None),                # 旧数据仅 done 真 → 排除且不算今日完成
+        _task("y", YDAY.isoformat()),                                         # 真逾期
+    ]
+    _set_tasks(ctx, tasks)
+    out = pw.collect_tasks(TODAY)
+    assert [t["id"] for t in out["overdue"]] == ["y"]
+    assert not {t["id"] for t in out["done_today"]} & {"h", "x"}
+
+
 def test_collect_tasks_sort_order():
     """今日待办：有 time 按 time，无 time 排最后。"""
     tmp = Path(tempfile.mkdtemp())
