@@ -24,7 +24,7 @@ RETRY_BACKOFF_SECONDS = 30 * 60
 FAIL_FILE = ".bootstrap-fail"
 
 CORE_IMPORTS = ("pdfplumber", "docx", "openpyxl", "pptx", "xlrd")
-OCR_IMPORTS = ("rapidocr", "pypdfium2")
+OCR_IMPORTS = ("rapidocr", "pypdfium2", "onnxruntime")
 
 
 def pylibs_dir() -> Path:
