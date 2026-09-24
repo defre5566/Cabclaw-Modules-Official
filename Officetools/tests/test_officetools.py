@@ -1,6 +1,6 @@
 """核心层单测：bootstrap 自举 / parsers 五格式 / worker 入站流程 / S1 安全校验。
 
-依赖：WECHAT_CLAW_HOST 宿主注入 + pylibs（conftest 自举）；样例由 fixtures 现场生成。
+依赖：CABCLAW_HOST 宿主注入 + pylibs（conftest 自举）；样例由 fixtures 现场生成。
 """
 from __future__ import annotations
 
@@ -233,6 +233,27 @@ class TestInboundFlow:
         state = json.loads(worker.STATE_FILE.read_text())
         assert state["latest_file"]["interpreted"] is False
 
+    def test_file_msg_dependency_unready_and_auto_off_returns_rc3(self, env, monkeypatch):
+        """依赖未就绪时，自动解析关闭仍必须记录并交还 Agent。"""
+        monkeypatch.setattr(worker.bootstrap, "ensure_core", lambda: (False, "未安装"))
+        p = env["inbox"] / "f.pdf"
+        p.write_bytes(b"x")
+        settings = dict(worker.DEFAULT_SETTINGS, file_auto_on=False)
+        monkeypatch.setattr(worker, "_settings", lambda: settings)
+        rc, _ = worker.handle_inbound(f"[收到file: f.pdf，已存 {p}]", "c")
+        assert rc == 3
+        assert json.loads(worker.STATE_FILE.read_text())["latest_file"]["interpreted"] is False
+
+    def test_image_system_marker_is_recorded_and_returned(self, env, monkeypatch):
+        monkeypatch.setattr(worker.bootstrap, "ensure_core", lambda: (False, "未安装"))
+        p = env["inbox"] / "photo.png"
+        p.write_bytes(b"\x89PNG\r\n\x1a\n")
+        settings = dict(worker.DEFAULT_SETTINGS, file_auto_on=False)
+        monkeypatch.setattr(worker, "_settings", lambda: settings)
+        rc, _ = worker.handle_inbound(f"[收到image: photo.png，已存 {p}]", "c")
+        assert rc == 3
+        assert json.loads(worker.STATE_FILE.read_text())["latest_file"]["name"] == "photo.png"
+
     def test_file_msg_auto_on(self, env, samples, monkeypatch):
         monkeypatch.setattr(worker, "_ocr_ready", lambda s: False)
         settings = dict(worker.DEFAULT_SETTINGS, file_auto_on=True)
@@ -308,7 +329,7 @@ def test_bare_spawn_no_pythonpath(tmp_path):
     """
     import shutil
 
-    host = Path(os.environ["WECHAT_CLAW_HOST"]).resolve()
+    host = Path(os.environ["CABCLAW_HOST"]).resolve()
     deploy = tmp_path / "deploy"
     (deploy / "modules").mkdir(parents=True)
     (deploy / "bridge").symlink_to(host / "bridge", target_is_directory=True)

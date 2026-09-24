@@ -461,7 +461,8 @@ def main(argv: list[str] | None = None) -> int:
                 for t in items:
                     sent[f"{now.date()}|{t['id']}"] = now.strftime("%Y-%m-%d %H:%M:%S")
             save_sent_json(SENT_FILE, sent)
-        prune_state_file(SENT_FILE)
+        # 以本轮 worker 的业务日期修剪，避免测试/补跑指定日期时把当前防重键误删。
+        prune_state_file(SENT_FILE, reference_date=today)
         refresh_shared(tasks)  # 每次运行刷新共享层（含无提醒时）
         return 0
     except Exception as e:

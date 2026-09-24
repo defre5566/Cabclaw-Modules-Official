@@ -20,9 +20,9 @@
         "LICENSE"
       ],
       "requires": {
-        "python": ">=3.11"
+        "python": ">=3.12"
       },
-      "sha256": "2d432cf99821262dc49bd70d9731296f7c390f1bc8cd4bea6b00b14f4d4ed8ad"
+      "sha256": "824111b933efef46db5dc43776c3f82d55112543a5660f0c844ee189d7a5fc5e"
     },
     {
       "name": "Planner",
@@ -44,9 +44,9 @@
         "LICENSE"
       ],
       "requires": {
-        "python": ">=3.11"
+        "python": ">=3.12"
       },
-      "sha256": "86353a22e407c610e75da00046c7c2b4db8084e8098dd33ca4bd11e387652cb2"
+      "sha256": "94d1e1d16e8e9055e4a7f535e9b31985ce860fdc9485b01c7176d73a4f51da10"
     },
     {
       "name": "emotion",
@@ -66,9 +66,9 @@
         "LICENSE"
       ],
       "requires": {
-        "python": ">=3.11"
+        "python": ">=3.12"
       },
-      "sha256": "53b0d3c9171f1cc454a45c7a41e59a82a97358dde6532b322379cdeeb55b9425"
+      "sha256": "981f6a878a0bf2c1d6c8ff3fec8336864e50eb41adb9371d5c2626717531a56f"
     },
     {
       "name": "Officetools",
@@ -91,9 +91,9 @@
         "tests/"
       ],
       "requires": {
-        "python": ">=3.11"
+        "python": ">=3.12"
       },
-      "sha256": "8efd0f1136ab9e31283f1e665911129d383aaebc4e3a0c207ff89fccf6a7b32d"
+      "sha256": "0bb2c30a4de525d031f0d0179b1a39155c81d065e2e714fea9496dbc94e3f83f"
     }
   ]
 }

@@ -1,6 +1,6 @@
 """模块源测试宿主注入（同 Planner/todo）+ pylibs 自举。
 
-1. WECHAT_CLAW_HOST 注入宿主项目根（common/bridge）；未设置时跳过业务测试。
+1. CABCLAW_HOST 注入宿主项目根（common/bridge）；未设置时跳过业务测试。
 2. pylibs：OFFICETOOLS_PYLIBS 指定；未指定时开发缓存 .devcache/pylibs（gitignore）。
    核心依赖缺失时调用模块自带的 bootstrap.ensure_core() 现场自举
    （同时即是对自举机制的测试）；无网失败 → skip。
@@ -13,7 +13,7 @@ from pathlib import Path
 
 MODULE_DIR = Path(__file__).resolve().parent.parent
 
-HOST = os.environ.get("WECHAT_CLAW_HOST", "").strip()
+HOST = os.environ.get("CABCLAW_HOST", "").strip()
 if HOST:
     host_root = Path(HOST)
     if (host_root / "modules").is_dir():

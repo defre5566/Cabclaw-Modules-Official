@@ -14,10 +14,10 @@
 ```bash
 # 方式一：从模块源安装（web 或 CLI）
 # 方式二：拷贝到主项目 modules/
-cp -r emotion <wechat-claw>/modules/
+cp -r emotion <cabclaw>/modules/
 
 # 注册并启用（token 由 register 生成，模块包不含 token）
-python3 <wechat-claw>/modules/register.py emotion --purpose "拟人化主动关心" --enable
+python3 <cabclaw>/modules/register.py emotion --purpose "拟人化主动关心" --enable
 ```
 
 ## 设置（web 模块参数区可改，存数据区 settings.json）
@@ -39,7 +39,7 @@ python3 <wechat-claw>/modules/register.py emotion --purpose "拟人化主动关�
 ## 自测
 
 ```bash
-WECHAT_CLAW_HOST=<主项目根> python3 -m pytest emotion/tests/   # cwd = 模块源仓库根
+CABCLAW_HOST=<主项目根> python3 -m pytest emotion/tests/   # cwd = 模块源仓库根
 python3 modules/emotion/emotion_worker.py --dry-run            # 只打印判定，零副作用
 python3 modules/emotion/emotion_worker.py --inspect            # 查看状态与反馈摘要
 ```

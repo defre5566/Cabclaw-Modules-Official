@@ -34,11 +34,11 @@
 
 ```bash
 OFFICETOOLS_PYLIBS=<pylibs 目录> \
-WECHAT_CLAW_HOST=<wechat-claw 项目根> \
+CABCLAW_HOST=<cabclaw 项目根> \
     python -m pytest Officetools/tests/
 ```
 
-未设置 `WECHAT_CLAW_HOST` 时跳过（缺主项目 common）。
+未设置 `CABCLAW_HOST` 时跳过（缺主项目 common）。
 
 ## 详见
 

@@ -6,5 +6,10 @@
   "offset_min": 5,
   "timeoutSeconds": 1800,
   "output_dir": "briefing",
-  "enabled_field": "briefing_on"
+  "enabled_field": "briefing_on",
+  "max_tool_steps": 20,
+  "max_output_tokens": 8192,
+  "artifacts": [
+    {"path": "{date}.html", "format": "html"}
+  ]
 }

@@ -33,9 +33,9 @@
 
 ## 依赖
 
-- 宿主平台（wechat-claw）：common 公共库（weather/calendar/holidays/localdata/io/push）
-- todo 模块（可选，任务数据源）；opencode scheduler（简报 job 由 register 保存设置时**自动登记**，无需手动部署）
-- skills（简报基底要求）：微信公众号检索（重点）> Exa > websearch
+- 宿主平台（cabclaw）：common 公共库（weather/calendar/holidays/localdata/io/push）
+- todo 模块（可选，任务数据源）；bridge scheduler（简报 job 由 register 保存设置时**自动登记**，无需手动部署）
+- 简报 job 使用宿主提供的 `web_search`、`fetch_url`、`write_file`；外部内容必须保留来源链接，不以模型记忆补造事实
 
 ## 版本与更新
 

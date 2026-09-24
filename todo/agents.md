@@ -35,7 +35,7 @@
 
 ### Obsidian 模式（data_source = vault）
 
-- 写入位置：`settings.json` 的 `vault_task_dir`（绝对路径；**留空 = `<vault_path>/wechat-claw-todo/`**）
+- 写入位置：`settings.json` 的 `vault_task_dir`（绝对路径；**留空 = `<vault_path>/cabclaw-todo/`**）
 - 文件名固定 `todo-YYYY-MM.md`（按任务 due 所在月份）；目录不存在则创建；当月文件已存在则**追加任务行**（不覆盖用户已有内容）
 - 任务行格式（Tasks 语法）：`- [ ] 任务文案 📅 YYYY-MM-DD ⏰ HH:MM`
 - 写后回读核对同上
@@ -52,7 +52,7 @@
 
 ## Obsidian 模式补充（仅当用户明确在用 Obsidian 库）
 
-- 数据源切到 vault 后，任务写入位置见上文"写任务 → Obsidian 模式"（`vault_task_dir` / 默认 wechat-claw-todo/）
+- 数据源切到 vault 后，任务写入位置见上文"写任务 → Obsidian 模式"（`vault_task_dir` / 默认 cabclaw-todo/）
 - 勾选完成 = 任务行尾追加 `✅ YYYY-MM-DD`（重复任务同理，不删改其他字段——下一次提醒依赖 Tasks 插件生成新行）；vault 模式任务文件读写用 Obsidian 语法，不要改 `modules/modules_data/todo/tasks/` 目录
 
 ## 已知边界

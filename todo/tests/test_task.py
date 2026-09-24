@@ -1,6 +1,6 @@
 """task.py（Obsidian 私有解析器）回归：parse_task_line / tag_prefix / scan_md_tasks / sort_due_key。
 
-随 task.py 归 todo 模块（模块源），运行方式同 test_todo_worker（需 WECHAT_CLAW_HOST 注入宿主 common）。
+随 task.py 归 todo 模块（模块源），运行方式同 test_todo_worker（需 CABCLAW_HOST 注入宿主 common）。
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from task import ParsedTask, parse_task_line, scan_md_tasks  # noqa: E402
 try:
     import common  # noqa: F401  # 宿主注入验证
 except ImportError:
-    pytest.skip("缺少宿主 common 库：请设置 WECHAT_CLAW_HOST=<宿主项目根>", allow_module_level=True)
+    pytest.skip("缺少宿主 common 库：请设置 CABCLAW_HOST=<宿主项目根>", allow_module_level=True)
 
 
 # ---------- parse_task_line ----------

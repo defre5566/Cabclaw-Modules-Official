@@ -70,7 +70,7 @@ def inbox_dir(settings: dict | None = None) -> Path:
     env = __import__("os").environ.get("OFFICETOOLS_INBOX", "").strip()
     if env:
         return Path(env).resolve()
-    host = __import__("os").environ.get("WECHAT_CLAW_HOST", "").strip()
+    host = __import__("os").environ.get("CABCLAW_HOST", "").strip()
     if host:
         return (Path(host) / "inbox").resolve()
     return MODULE_DIR.parent.parent / "inbox"
@@ -280,10 +280,6 @@ def _record_received(target: Path) -> None:
 
 def handle_inbound(text: str, conversation_id: str, dry: bool = False) -> tuple[int, str]:
     settings = _settings()
-    core_ok, _ = bootstrap.ensure_core()
-    if not core_ok:
-        return 0, "解析组件准备中（首次启用自动安装），几分钟后重试"
-
     target = extract_inbox_path(text)
     if target is not None:
         # 范围外格式：无论开关，一律 rc=0 回支持清单（转 agent 无意义）
@@ -293,9 +289,15 @@ def handle_inbound(text: str, conversation_id: str, dry: bool = False) -> tuple[
             _record_received(target)
             if not settings.get("file_auto_on"):
                 return 3, ""
+        core_ok, _ = bootstrap.ensure_core()
+        if not core_ok:
+            return 0, "解析组件准备中（首次启用自动安装），几分钟后重试"
         return parse_and_deliver(target, settings, dry=dry)
 
     if "解读" in text:
+        core_ok, _ = bootstrap.ensure_core()
+        if not core_ok:
+            return 0, "解析组件准备中（首次启用自动安装），几分钟后重试"
         ocr_ready = _ocr_ready(settings)
         target, reason = locate_target(text, settings, ocr_ready)
         if target is None:

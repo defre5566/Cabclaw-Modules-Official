@@ -1,8 +1,8 @@
 """Planner 模块业务回归（任务分组 / 倒计时 / 素材拼装 / 防重 / dry-run 零副作用）。
 
 运行方式（需指定宿主项目以提供 common 公共库）：
-    WECHAT_CLAW_HOST=/home/xinyi/wechat-claw-dist \
-        python -m pytest wechat-claw_modules_official/Planner/tests/
+    CABCLAW_HOST=/home/xinyi/cabclaw-dist \
+        python -m pytest cabclaw-modules/Planner/tests/
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ import planner_worker as pw  # noqa: E402
 try:
     import common  # noqa: F401  # 验证宿主注入是否成功
 except ImportError:
-    pytest.skip("缺少宿主 common 库：请设置 WECHAT_CLAW_HOST=<宿主项目根>", allow_module_level=True)
+    pytest.skip("缺少宿主 common 库：请设置 CABCLAW_HOST=<宿主项目根>", allow_module_level=True)
 
 TODAY = date.today()
 TOMORROW = TODAY + timedelta(days=1)

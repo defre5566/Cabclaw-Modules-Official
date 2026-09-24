@@ -7,7 +7,7 @@
     {"every": "5m", "args": ["--bootstrap-check"]}
   ],
   "inbound": {
-    "intents": ["解读", "[收到file"],
+    "intents": ["解读", "解析", "提取", "票据", "发票", "合同", "论文", "[收到file", "[收到image"],
     "scope": "all",
     "priority": 0
   },

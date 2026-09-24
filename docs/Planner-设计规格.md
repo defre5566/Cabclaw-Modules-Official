@@ -48,9 +48,9 @@ typhoon_on        # 台风开关（默认关；location 沿海才生效）
 - 早报消费：热度高/影响大要点几句 + 原文 file 附发（**不二次摘要，防失真**）
 
 ### 4.2 基底 prompt（平台预设）
-- 存储：`modules/Planner/prompts/`，**crypto 加密**（.enc），接口不暴露（不可看不可改）
+- 存储：`modules/Planner/prompts/base.prompt.md`，明文随模块发布；内容变化纳入 job 定义 revision，旧执行不得继续提交
 - 内容：昨日 24h · 三层信源（搜索 → 核实 → 评论解读检索）· 事实/观点分层 + 来源标注 · 通用三段（要点 / 评论与解读 / 延伸关注）· 字数参数化 · 失败重试 · HTML 输出
-- 依赖 skills（**平台内置**）：微信公众号检索（重点）> Exa > websearch
+- 工具：使用宿主提供的 `web_search`、`fetch_url`、`write_file`；不依赖 Exa、webfetch、Jina、curl 或外部 skill。搜索/抓取失败时不得凭模型记忆补造联网事实
 
 ### 4.3 方向（预设只读，不可编辑）
 | 方向 | 类型 | 信源 |
@@ -112,8 +112,9 @@ evening: 问候 → 完成 → 未完成/逾期 → 鼓励 → 晚间建议
 
 ### 7.3 简报 job 注册
 - planner 携带 `job.template.json`（agent 型长任务模板）
-- register 联动 opencode scheduler：启用 → 注册（cron = morning_time - 5min）；设置变化 → 更新（prompt = 基底解密 + 方向关键词 + 自定义）；停用/卸载 → 注销
-- 容错：无 opencode/scheduler → job 注册失败 → 简报段自动无段，不阻塞早晚报
+- register 联动 bridge scheduler：启用 → 注册（daily phase = morning_time - 5min）；设置变化 → 更新（prompt = 基底 + 方向适配 + 自定义）；停用/卸载 → 定义失效并取消 queued/running 执行
+- 基底 prompt、`directions.json`、自定义 prompt 或设置快照变化都会更新定义 revision；同一进程中旧任务收到取消信号，不能发布过期产物
+- 容错：job 登记失败 → 简报段自动无段，不阻塞早晚报
 
 ### 7.4 数据目录
 ```
@@ -133,7 +134,7 @@ modules/Planner/
 ├── 规范.md                  # 素材组装规范（段序/数据源）
 ├── agents.md                # agent 素材组织规则（话术跟随全局 AGENTS.md）
 ├── job.template.json        # 简报生成 agent job 模板
-├── prompts/                 # 预设 prompt（crypto 加密 .enc）
+├── prompts/                 # 预设 prompt（明文 base.prompt.md）
 └── README.md                # 模块自述
 ```
 

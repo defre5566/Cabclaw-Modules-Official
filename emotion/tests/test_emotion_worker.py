@@ -23,7 +23,7 @@ import emotion_worker as ew  # noqa: E402
 try:
     import common  # noqa: F401  # 验证宿主注入是否成功
 except ImportError:
-    pytest.skip("缺少宿主 common 库：请设置 WECHAT_CLAW_HOST=<宿主项目根>", allow_module_level=True)
+    pytest.skip("缺少宿主 common 库：请设置 CABCLAW_HOST=<宿主项目根>", allow_module_level=True)
 
 
 # ---------- fixtures ----------
@@ -359,7 +359,7 @@ def test_bare_spawn_no_pythonpath(ew_env, monkeypatch, tmp_path):
     --inspect 零副作用（state.enc 不存在时不触碰 crypto、不写文件）。
     """
     ew, _ = ew_env, ew_env.calls
-    host = Path(os.environ["WECHAT_CLAW_HOST"]).resolve()
+    host = Path(os.environ["CABCLAW_HOST"]).resolve()
     deploy = tmp_path / "deploy"
     (deploy / "modules").mkdir(parents=True)
     (deploy / "bridge").symlink_to(host / "bridge", target_is_directory=True)

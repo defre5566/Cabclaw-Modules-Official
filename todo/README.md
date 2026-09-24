@@ -4,7 +4,7 @@
 
 ## 快速开始
 
-1. 安装主项目 wechat-claw（本模块依赖其 `modules/common/` 公共库）
+1. 安装主项目 cabclaw（本模块依赖其 `modules/common/` 公共库）
 2. 拷贝本目录到主项目 `modules/todo/`，执行 `register.py --enable todo`
 3. （可选）管理后台 → 模块 → todo → 设置：默认**内置数据源**开箱即用；想接 Obsidian 库则切换数据源并填库目录
 
@@ -13,7 +13,7 @@
 | 数据源 | 说明 |
 |---|---|
 | **内置数据源**（默认） | 任务存 `modules/modules_data/todo/tasks/YYYY-MM.json`（按月），由 agent 在会话中维护（说"记个任务"即可）；worker 全扫所有月文件按到期日过滤 |
-| **Obsidian** | 递归扫描你填的库目录下所有 `.md` 的 Tasks 任务行，**带日期（📅）的才算待办**；⏰/🔔 为本产品扩展标记（Tasks 原生无时间字段）；任务由 agent 写入设置指定的 `vault_task_dir`（留空默认库内 `wechat-claw-todo/`，文件固定 `todo-YYYY-MM.md`，当月存在则追加） |
+| **Obsidian** | 递归扫描你填的库目录下所有 `.md` 的 Tasks 任务行，**带日期（📅）的才算待办**；⏰/🔔 为本产品扩展标记（Tasks 原生无时间字段）；任务由 agent 写入设置指定的 `vault_task_dir`（留空默认库内 `cabclaw-todo/`，文件固定 `todo-YYYY-MM.md`，当月存在则追加） |
 
 ## 任务字段
 
