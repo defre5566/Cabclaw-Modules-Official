@@ -280,9 +280,9 @@ def _pdf_parse_digital(path: Path, result: ParseResult, max_pages: int) -> None:
 
 def _pdf_parse_ocr(path: Path, result: ParseResult, max_pages: int, ocr_max_pages: int) -> None:
     import pypdfium2 as pdfium
-    from rapidocr import RapidOCR
+    import bootstrap
 
-    engine = RapidOCR()
+    engine = bootstrap.create_ocr_engine()
     doc = pdfium.PdfDocument(str(path))
     total = len(doc)
     pages = min(total, max_pages, ocr_max_pages)
@@ -324,9 +324,9 @@ def _pdf_parse_ocr(path: Path, result: ParseResult, max_pages: int, ocr_max_page
 # ---------- 图片（OCR 层） ----------
 
 def _parse_image(path: Path, result: ParseResult) -> None:
-    from rapidocr import RapidOCR
+    import bootstrap
 
-    engine = RapidOCR()
+    engine = bootstrap.create_ocr_engine()
     ocr_result = engine(str(path))
     lines: list[str] = []
     if ocr_result is not None:

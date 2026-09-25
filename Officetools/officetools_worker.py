@@ -13,12 +13,18 @@ rc 语义（定稿 B）：0=自答（stdout 回微信）/ 3=转 agent / 1=业务
 """
 from __future__ import annotations
 
-import fcntl
+import errno
+import os
 import re
 import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))  # 项目根：bridge（自持，裸 spawn 可跑）
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))         # modules/：common
@@ -44,6 +50,33 @@ DEFAULT_SETTINGS = {
     "overview_max_chars": 800,
     "retention_days": 7,
 }
+
+
+def _acquire_parse_lock(stream) -> bool:
+    """跨平台非阻塞文件锁；Windows 锁定文件首字节，POSIX 使用 flock。"""
+    try:
+        if os.name == "nt":
+            stream.seek(0, os.SEEK_END)
+            if stream.tell() == 0:
+                stream.write(b"\0")
+                stream.flush()
+            stream.seek(0)
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError as exc:
+        if exc.errno in (errno.EACCES, errno.EAGAIN):
+            return False
+        raise
+
+
+def _release_parse_lock(stream) -> None:
+    if os.name == "nt":
+        stream.seek(0)
+        msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(stream, fcntl.LOCK_UN)
 
 # bridge 媒体提示形如 "[收到file: xxx.pdf，已存 /path/inbox/xxx.pdf]"
 _MEDIA_RE = re.compile(r"\[收到\w+: (?P<name>[^\]]*?)?，?已存 (?P<path>[^\]]+)\]")
@@ -208,11 +241,11 @@ def parse_and_deliver(target: Path, settings: dict, dry: bool = False) -> tuple[
         return 0, f"文件过大（{size // (1024 * 1024)}MB > 上限 {settings.get('max_file_mb', 200)}MB），暂不支持解析"
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    lock = LOCK_FILE.open("w")
+    lock = LOCK_FILE.open("a+b")
+    locked = False
     try:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+        locked = _acquire_parse_lock(lock)
+        if not locked:
             return 0, "上一个文件正在解析中，请稍候再试"
 
         ext = target.suffix.lower()
@@ -264,7 +297,11 @@ def parse_and_deliver(target: Path, settings: dict, dry: bool = False) -> tuple[
             reply += f"\n（inbox 还有 {pending} 个未解读文件）"
         return 0, reply
     finally:
-        lock.close()
+        try:
+            if locked:
+                _release_parse_lock(lock)
+        finally:
+            lock.close()
 
 
 def _record_received(target: Path) -> None:
@@ -330,6 +367,7 @@ def _inspect() -> int:
     只读：不装依赖、不写文件、不触碰 crypto；pylibs 缺失时报告未就绪而非现场自举。
     """
     pylibs = bootstrap.pylibs_dir()
+    bootstrap.inject_sys_path(pylibs)
     core_ok = bootstrap._imports_ok(bootstrap.CORE_IMPORTS)
     ocr_ok = bootstrap._imports_ok(bootstrap.OCR_IMPORTS)
     print("state:")

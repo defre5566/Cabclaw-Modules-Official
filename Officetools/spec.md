@@ -47,10 +47,11 @@ bridge 收到媒体文件 → 落 inbox/ → 消息流插入 `[收到file: <名>
 ## 依赖自举（守护 tick，every 5m `--bootstrap-check`）
 
 - 依赖装到 `modules/modules_data/Officetools/pylibs/`（不动宿主 venv、不碰模块代码区）
-- 就绪判定以 import 探测为准（`.ready-*` 标记仅加速）；requirements hash 变更 → 自动增量装
+- 就绪判定以 import 探测为准（`.ready-*` 标记仅加速）；核心与 OCR 分开记录 requirements hash，变更 → 自动升级
+- 本地 `wheelhouse/<layer>/` 有 wheel 时先试离线安装；缺少依赖闭包则先走清华 PyPI 镜像、失败回退 PyPI，且拒绝源码包；仅写数据区 `pylibs/`
 - `ocr_on` 开 → 下个 tick 装 OCR 层 + 模型预热（约几分钟）；关 → 只停用不卸载
-- pip 失败退避 30 分钟；单次安装超 280s 自杀重试（pip 断点续装）
-- 手动预热：`Officetools_worker.py --bootstrap`
+- pip 失败退避 30 分钟；每个来源上限 120s，全部来源共享 250s 预算（低于宿主 300s 限制），先镜像后 PyPI，失败详细原因可追踪
+- 手动预热：`officetools_worker.py --bootstrap`
 
 ## 解析限制（settings 可调）
 
@@ -72,6 +73,6 @@ bridge 收到媒体文件 → 落 inbox/ → 消息流插入 `[收到file: <名>
    种子词时 agent 盲答，属可接受残余风险
 2. 接管（rc=0）的消息不进 agent 会话历史
 3. antiword/catppt 需部署机安装（`apt install antiword catdoc`），Windows 不可用
-4. rapidocr 模型首次预热需联网；pip 需代理时 systemd 环境注入
+4. rapidocr 模型首次预热依模块安装的模型文件与所在环境检查；wheel 缓存不等于已经预热成功
 5. SDK CDN 下载 60s 超时：慢网络下大文件可能到不了 inbox（SDK 层，非本模块）
 6. 旧格式 .doc/.ppt 提取纯文本，无排版结构

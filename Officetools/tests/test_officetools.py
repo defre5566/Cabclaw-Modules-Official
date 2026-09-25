@@ -105,9 +105,116 @@ class TestBootstrap:
     def test_backoff(self, tmp_path, monkeypatch):
         monkeypatch.setattr(bootstrap, "pylibs_dir", lambda: tmp_path)
         bootstrap._record_fail(tmp_path, "core", "test")
-        assert bootstrap._backoff_active(tmp_path)
+        assert bootstrap._backoff_active(tmp_path, "core")
+        assert not bootstrap._backoff_active(tmp_path, "ocr")
         monkeypatch.setattr(bootstrap, "RETRY_BACKOFF_SECONDS", -1)
-        assert not bootstrap._backoff_active(tmp_path)
+        assert not bootstrap._backoff_active(tmp_path, "core")
+
+    def test_core_success_does_not_clear_ocr_backoff(self, tmp_path, monkeypatch):
+        bootstrap._record_fail(tmp_path, "ocr", "model unavailable")
+        monkeypatch.setattr(bootstrap, "_imports_ok", lambda mods: mods == bootstrap.CORE_IMPORTS)
+        assert bootstrap.ensure_core(tmp_path)[0]
+        assert bootstrap._backoff_active(tmp_path, "ocr")
+
+    def test_inspect_uses_pylibs_from_data_root(self, tmp_path, monkeypatch, capsys):
+        """自检只读，但应和守护预热使用同一 pylibs 导入路径。"""
+        target = tmp_path / "pylibs"
+        monkeypatch.setattr(bootstrap, "pylibs_dir", lambda: target)
+        seen = []
+        monkeypatch.setattr(bootstrap, "inject_sys_path", lambda path: seen.append(path))
+        monkeypatch.setattr(bootstrap, "_imports_ok", lambda mods: mods == bootstrap.CORE_IMPORTS)
+        monkeypatch.setattr(worker, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(worker, "STATE_FILE", tmp_path / "state.json")
+        assert worker._inspect() == 0
+        assert seen == [target]
+        assert "core: 就绪" in capsys.readouterr().out
+
+    def test_installer_prefers_local_wheels_without_network(self, tmp_path, monkeypatch):
+        wheels = tmp_path / "wheelhouse" / "core"
+        wheels.mkdir(parents=True)
+        (wheels / "mock-1.0-py3-none-any.whl").write_bytes(b"fake")
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "ok", "")
+
+        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+        assert bootstrap._install("core", tmp_path / "pylibs") == (True, "ok")
+        assert len(calls) == 1
+        assert "--no-index" in calls[0] and str(wheels) in calls[0]
+        assert "--only-binary=:all:" in calls[0]
+
+    def test_installer_falls_back_to_pypi_after_mirror_failure(self, tmp_path, monkeypatch):
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 1 if len(calls) == 1 else 0,
+                                               "", "temporary failure")
+
+        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+        assert bootstrap._install("ocr", tmp_path / "pylibs") == (True, "ok")
+        assert len(calls) == 2
+        assert bootstrap.MIRROR_INDEX in calls[0]
+        assert bootstrap.PYPI_INDEX in calls[1]
+
+    def test_installer_recovers_pip_error_from_frozen_io(self, tmp_path, monkeypatch):
+        io = tmp_path / ".worker-test"
+        io.mkdir()
+        (io / "pip-stderr").write_text("wheel install error", encoding="utf-8")
+        monkeypatch.setenv("CABCLAW_WORKER_IO_DIR", str(io))
+        monkeypatch.setattr(bootstrap.sys, "frozen", True, raising=False)
+        monkeypatch.setattr(bootstrap.subprocess, "run", lambda command, **kwargs:
+                            subprocess.CompletedProcess(command, 1, "", ""))
+        ok, error = bootstrap._install("core", tmp_path / "pylibs")
+        assert not ok and "wheel install error" in error
+
+    def test_layer_requirement_hashes_do_not_override_each_other(self, tmp_path, monkeypatch):
+        installed = []
+        monkeypatch.setattr(bootstrap, "_imports_ok", lambda mods: True)
+        monkeypatch.setattr(bootstrap, "_install", lambda layer, pylibs: (installed.append(layer) or True, "ok"))
+        assert bootstrap.ensure_core(tmp_path)[0]
+        assert bootstrap.ensure_ocr(tmp_path)[0]
+        assert installed == []
+        core_hash = bootstrap._hash_file(tmp_path, "core")
+        ocr_hash = bootstrap._hash_file(tmp_path, "ocr")
+        assert core_hash.is_file() and ocr_hash.is_file() and core_hash != ocr_hash
+        core_hash.write_text("older-core", encoding="utf-8")
+        assert bootstrap.ensure_core(tmp_path)[0]
+        assert installed == ["core"]
+        assert bootstrap.ensure_ocr(tmp_path)[0]
+        assert installed == ["core"]
+
+    def test_first_install_injects_new_pylibs_before_import_probe(self, tmp_path, monkeypatch):
+        module = "cabclaw_bootstrap_probe"
+        pylibs = tmp_path / "fresh-pylibs"
+        monkeypatch.setattr(bootstrap, "CORE_IMPORTS", (module,))
+
+        def fake_install(layer, dest):
+            dest.mkdir(parents=True)
+            (dest / f"{module}.py").write_text("READY = True\n", encoding="utf-8")
+            return True, "ok"
+
+        monkeypatch.setattr(bootstrap, "_install", fake_install)
+        try:
+            assert bootstrap.ensure_core(pylibs) == (True, "ok")
+            assert str(pylibs.resolve()) in sys.path
+        finally:
+            sys.path[:] = [item for item in sys.path if item != str(pylibs.resolve())]
+            sys.modules.pop(module, None)
+
+    def test_ocr_engine_passes_string_model_root(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        seen = []
+        fake = SimpleNamespace(__file__=str(tmp_path / "rapidocr" / "__init__.py"),
+                               RapidOCR=lambda **kwargs: seen.append(kwargs) or object())
+        monkeypatch.setitem(sys.modules, "rapidocr", fake)
+        bootstrap.create_ocr_engine()
+        assert seen == [{"params": {
+            "Global.model_root_dir": str(tmp_path / "rapidocr" / "models")
+        }}]
 
 
 # ---------- parsers ----------
@@ -292,6 +399,43 @@ class TestInboundFlow:
     def test_point_missing(self, env):
         rc, reply = worker.handle_inbound("解读 不存在.pdf", "c")
         assert rc == 0 and "没有名为" in reply
+
+    def test_parse_lock_is_nonblocking_and_released(self, env):
+        lock_path = worker.LOCK_FILE
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+b") as first, lock_path.open("a+b") as second:
+            assert worker._acquire_parse_lock(first)
+            assert not worker._acquire_parse_lock(second)
+            worker._release_parse_lock(first)
+            assert worker._acquire_parse_lock(second)
+            worker._release_parse_lock(second)
+
+    def test_windows_parse_lock_uses_msvcrt(self, env, monkeypatch):
+        """离线仿真 Windows 文件锁分支，真实 Windows 结果留待远端测试。"""
+        import errno
+        from types import SimpleNamespace
+
+        held = set()
+
+        def locking(fd, mode, length):
+            if mode == 1:  # LK_UNLCK
+                held.remove(0)
+            elif held:
+                raise OSError(errno.EACCES, "locked")
+            else:
+                held.add(0)
+
+        monkeypatch.setattr(worker, "os", SimpleNamespace(name="nt", SEEK_END=os.SEEK_END))
+        monkeypatch.setattr(worker, "msvcrt", SimpleNamespace(LK_NBLCK=2, LK_UNLCK=1,
+                                                               locking=locking), raising=False)
+        path = env["data"] / ".parse.lock"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a+b") as first, path.open("a+b") as second:
+            assert worker._acquire_parse_lock(first)
+            assert not worker._acquire_parse_lock(second)
+            worker._release_parse_lock(first)
+            assert worker._acquire_parse_lock(second)
+            worker._release_parse_lock(second)
 
     def test_cleanup_retention(self, env, monkeypatch):
         outputs = env["data"] / "outputs"
