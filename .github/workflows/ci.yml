@@ -1,0 +1,44 @@
+name: Official Modules CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  officetools:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CABCLAW_HOST: ${{ github.workspace }}/cabclaw-host
+      CABCLAW_DATA_ROOT: ${{ runner.temp }}/cabclaw-module-tests
+      OFFICETOOLS_PYLIBS: ${{ runner.temp }}/cabclaw-officetools-pylibs
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/checkout@v5
+        with:
+          repository: defre5566/Cabclaw-dev
+          ref: a998a33485eef1527bf34ef4256b67a2782ebdb6
+          path: cabclaw-host
+      - name: Install host and core dependencies
+        run: |
+          python -m pip install -r cabclaw-host/requirements.txt
+          python -m pip install -e ./cabclaw-host/vendor/wechat_agent_sdk
+          python -m pip install --only-binary=:all: --target "${{ runner.temp }}/cabclaw-officetools-pylibs" -r Officetools/requirements.txt
+      - name: Core module tests
+        if: runner.os != 'Windows'
+        run: python -m pytest Officetools/tests/test_officetools.py -q
+      - name: Core module tests (Windows)
+        if: runner.os == 'Windows'
+        run: python -m pytest Officetools/tests/test_officetools.py -q -k "not bare_spawn_no_pythonpath"
+      - name: Install OCR on demand and warm up
+        run: |
+          python -m pip install --only-binary=:all: --upgrade --target "${{ runner.temp }}/cabclaw-officetools-pylibs" -r Officetools/requirements-ocr.txt
+          python -c "import sys; sys.path.insert(0, 'Officetools'); import bootstrap; ready, detail = bootstrap.ensure_ocr(); assert ready, detail; ready, detail = bootstrap.warmup_ocr(); assert ready, detail"
