@@ -17,7 +17,9 @@
 
 ## 任务字段
 
-`id`（防重键）· `text` · `due`（到期日）· `time`（到点时刻，无则不提醒只存档）· `remind_min`（提前量）· `done` · `repeat`（每日/每周/每月重复）· `done_dates`（重复任务按天完成）· `tags`（词表标签，设置里可编辑）
+`id`（防重键）· `text` · `due`（到期日）· `time`（到期时刻，无则不提醒只存档）· `remind_min`（提前量）· `start_time/start_date`（仅内置模式可选的明确独立开始时间）· `done` · `repeat`（每日/每周/每月重复）· `done_dates`（重复任务按天完成）· `tags`（词表标签，设置里可编辑）。Obsidian 开始时间写入格式尚未定案，本轮不猜测正文里的自由文字。
+
+提醒事实由 todo 传给宿主按部署人设表达；模块数据区 `todo_pending.json` 保存待对账事件，HTTP 200 只表示可靠接受，查到 `sent` 后才写 `todo_sent.json`。`failed/unknown` 不自动换键重发，微信客户端实际到达另行确认。
 
 ## 标签
 

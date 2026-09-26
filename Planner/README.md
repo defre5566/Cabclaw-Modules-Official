@@ -1,7 +1,7 @@
 # Planner 模块（早晚报聚合）
 
 > 晨间早报 + 晚间复盘：聚合任务/天气/节假日/倒计时/信息简报，agent 加工成口语化文案推送。
-> 聚合型 + agent 协作型——worker 拼素材，agent 组织话术。
+> 聚合型 + agent 协作型——worker 汇总事实，bridge 按当前部署人设组织早晚报。
 
 ## 功能
 
@@ -29,6 +29,7 @@
 - 任务数据消费 todo 的共享层（`shared/tasks.json`），不直接读 todo 文件
 - 倒计时/纪念日：`modules/modules_data/Planner/countdown.json`（微信说"记个纪念日"由 agent 维护）
 - 简报：`modules/modules_data/Planner/briefing/*.html`（私有，不进 shared）
+- 推送对账：`modules/modules_data/Planner/push_events.json`（业务键、事实与文字/附件状态；普通数据区，不写源码目录）。HTTP 200 只说明事件已接受，`sent` 只说明 SDK 发送调用成功。
 - 自定义 prompt：`modules/modules_data/Planner/prompts/custom/`（web 导入/删除）
 
 ## 依赖
@@ -36,6 +37,7 @@
 - 宿主平台（cabclaw）：common 公共库（weather/calendar/holidays/localdata/io/push）
 - todo 模块（可选，任务数据源）；bridge scheduler（简报 job 由 register 保存设置时**自动登记**，无需手动部署）
 - 简报 job 使用宿主提供的 `web_search`、`fetch_url`、`write_file`；外部内容必须保留来源链接，不以模型记忆补造事实
+- 推送附件只在关联的早晚报文字 `sent` 后发送；失败/不确定状态不自动换键重发或冒充微信客户端已送达。
 
 ## 版本与更新
 
