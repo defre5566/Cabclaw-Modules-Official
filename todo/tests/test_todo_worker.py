@@ -19,6 +19,7 @@ MODULE_SRC = Path(__file__).resolve().parent.parent  # todo/
 sys.path.insert(0, str(MODULE_SRC))
 
 import todo_worker as tw  # noqa: E402
+from task import format_task_line  # noqa: E402
 
 try:
     import common  # noqa: F401  # 验证宿主注入是否成功
@@ -225,7 +226,7 @@ def test_run_refresh_shared_and_sent(monkeypatch):
     assert len(pending) == 1
     event_id = next(iter(pending))
     assert ctx["pushes"][0]["type"] == "reminder" and "text" not in ctx["pushes"][0]
-    assert ctx["pushes"][0]["facts"]["tasks"][0]["due_time"] == "14:00"
+    assert ctx["pushes"][0]["facts"]["tasks"][0]["time"] == "14:00"
     ctx["events"][event_id] = "sent"
     assert tw.main([]) == 0
     assert json.loads(tw.SENT_FILE.read_text(encoding="utf-8"))[f"{TODAY}|a"]
@@ -251,6 +252,35 @@ def test_vault_due_only_and_tags():
     by_text = {t["text"]: t for t in tasks}
     assert by_text["买菜"]["remind_min"] == 15 and by_text["买菜"]["tags"] == ["生活"]
     assert by_text["明天的事"]["tags"] == ["工作"]
+
+
+def test_vault_new_order_uses_one_neutral_time_for_start_and_deadline(tmp_path):
+    _mk(tmp_path)
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    lines = [
+        format_task_line("9点开始晨练", TODAY, at="09:00", tags=["健康"]),
+        format_task_line("9点到期交报表", TODAY, at="09:00"),
+        format_task_line("准备周会 带上季度材料", TODAY, at="09:30",
+                         remind_min=15, tags=["工作"]),
+    ]
+    (vault / "todo-2026-08.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    settings = {"vault_path": str(vault), "tag_prefix": "#todo/", "extract_tags": True}
+    tasks = tw.load_vault(settings, TODAY, save_cache=False)
+    by_text = {task["text"]: task for task in tasks}
+    assert len(by_text) == 3
+    assert all(by_text[name]["time"] == "09:00" for name in
+               ("9点开始晨练", "9点到期交报表"))
+    assert all(by_text[name]["reminder_time"] == "09:00" for name in
+               ("9点开始晨练", "9点到期交报表"))
+    assert by_text["准备周会 带上季度材料"]["reminder_time"] == "09:15"
+    assert by_text["准备周会 带上季度材料"]["tags"] == ["工作"]
+    assert all(task["start_time"] is None for task in tasks)
+    due = tw.compute_reminders(tasks, datetime(2026, 8, 21, 9, 15), {})
+    assert [(clock, [task["text"] for task in group]) for clock, group in due] == [
+        ("09:00", ["9点开始晨练", "9点到期交报表"]),
+        ("09:15", ["准备周会 带上季度材料"]),
+    ]
 
 
 def test_vault_done_at_from_tasks_done_mark():
@@ -469,8 +499,8 @@ def test_fact_times_and_early_cross_day_repeat():
     normal = tw._norm_task(task, TODAY)
     payload = tw._reminder_payload(TODAY, "23:30", [normal])
     fact = payload["facts"]["tasks"][0]
-    assert fact == {"id": "x", "task": "任务x", "due_date": TOMORROW.isoformat(),
-                    "due_time": "00:30", "remind_min": 60,
+    assert fact == {"id": "x", "task": "任务x", "date": TOMORROW.isoformat(),
+                    "time": "00:30", "remind_min": 60,
                     "reminder_date": TODAY.isoformat(), "reminder_time": "23:30",
                     "start_time": "22:00", "start_date": TODAY.isoformat()}
     assert "text" not in payload and "任务x" in payload["must_preserve"]
@@ -482,7 +512,7 @@ def test_quoted_task_name_is_fact_but_not_invalid_explicit_anchor():
     task = tw._norm_task(_task("a", TODAY.isoformat(), "14:00", text='复核 "A\\B"\n材料'), TODAY)
     payload = tw._reminder_payload(TODAY, "14:00", [task])
     assert payload["facts"]["tasks"][0]["task"] == '复核 "A\\B"\n材料'
-    assert payload["must_preserve"] == []  # 宿主从 task 字段提取名字，显式 JSON 锚点不应导致 400
+    assert payload["must_preserve"] == [TODAY.isoformat()]  # 转义名字不强加，日期仍须保留
 
 
 def test_post_receipt_lost_or_probe_unavailable_does_not_change_key(monkeypatch):

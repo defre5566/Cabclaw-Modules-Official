@@ -69,8 +69,8 @@ def _settings() -> dict | None:
 def _reminder_for_today(t: dict, today: date) -> tuple[str, str] | None:
     """算今日是否是 t 的提醒日。是则返回 (today_iso, reminder_time HH:MM)，否则 None。
 
-    跨日(remind_min > time 分钟数)则今日提醒的是明日到期任务（提前量跨凌晨）。
-    重复任务靠 repeat_due 判 target_due 是否到期日；单次直接比 due。
+    跨日(remind_min > time 分钟数)则今日提醒的是明日的事项（提前量跨凌晨）。
+    重复任务靠 repeat_due 判 target_due 是否为本轮事项日期；单次直接比 due。
     T2 兜底：due/repeat 非法返回 None（不崩）。
     """
     time_str = t.get("time")
@@ -434,7 +434,7 @@ def _event_id(day: date, trigger: str, items: list[dict]) -> str:
 
 
 def _reminder_payload(day: date, trigger: str, items: list[dict]) -> dict:
-    """只传任务事实；到期时刻、提醒触发点、独立开始时刻彼此不替代。"""
+    """只传任务事实；⏰ 的唯一时刻不被模块推断为开始或到期。"""
     facts = []
     anchors = []
     for t in items:
@@ -443,8 +443,8 @@ def _reminder_payload(day: date, trigger: str, items: list[dict]) -> dict:
             hour, minute = map(int, str(t["time"]).split(":"))
             due_day = day + timedelta(days=int(t.get("remind_min") or 0) > hour * 60 + minute)
             due = due_day.isoformat()  # 加载期 repeat_due 已确认本轮的 target_due
-        item = {"id": str(t["id"]), "task": t["text"], "due_date": due,
-                "due_time": t.get("time"), "remind_min": t.get("remind_min"),
+        item = {"id": str(t["id"]), "task": t["text"], "date": due,
+                "time": t.get("time"), "remind_min": t.get("remind_min"),
                 "reminder_date": t["reminder_date"], "reminder_time": trigger}
         if t.get("start_time"):
             item["start_time"] = t["start_time"]
@@ -455,9 +455,11 @@ def _reminder_payload(day: date, trigger: str, items: list[dict]) -> dict:
         # 含引号/反斜杠/换行的任务名在 JSON 中被转义，不能直接作为 must_preserve 传入。
         if len(t["text"]) <= 120 and t["text"] in json.dumps(item, ensure_ascii=False):
             anchors.append(t["text"])
+        if due not in anchors:
+            anchors.append(due)
     return {"type": "reminder", "event_id": _event_id(day, trigger, items),
             "facts": {"tasks": facts},
-            "intent": "用现有人设自然提醒这些任务，明确区分到期、提前提醒和用户明确写出的开始时刻。",
+            "intent": "按已给的日期、唯一基准时刻和提前量自然提醒；仅在任务原文明确写出时提及开始或到期，不自行推断。",
             "must_preserve": list(dict.fromkeys(anchors))}
 
 
