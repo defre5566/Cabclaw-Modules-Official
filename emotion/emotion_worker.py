@@ -17,6 +17,7 @@ import re
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -48,6 +49,7 @@ FEEDBACK_INJECT_MAX = 3     # 素材注入条数上限
 PHASE_WINDOW_H = 3          # 播报"近 N 小时"窗口
 TASKS_MAX_AGE = 3600        # shared tasks 新鲜度（todo 每分钟 tick 刷新）
 DEDUP_KEEP_DAYS = 2         # 防重键保留天数
+RECONCILE_BATCH = 2         # 状态查询单次最多 2 条，避免下游 15s 超时拖慢全局调度
 
 DEFAULT_SETTINGS = {
     "emotion_on": True,
@@ -87,6 +89,49 @@ PHASE_LABEL = {"morning": "上午", "midday": "下午", "evening": "傍晚到收
 
 # ---------- 加密状态 IO ----------
 
+class StateUnavailable(RuntimeError):
+    """推送业务账本不可读取，不能按空状态重新生成同一事件。"""
+
+
+@contextmanager
+def _state_lock():
+    """只锁短时状态读改写，不在锁内等 HTTP/LLM。"""
+    fd = None
+    locked = False
+    lock_path = DATA_DIR / ".state.lock"
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if lock_path.is_symlink():
+            raise OSError("state lock path invalid")
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        if os.name == "nt":
+            import msvcrt
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"\0")
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        locked = True
+        yield
+    except OSError as exc:
+        raise StateUnavailable("加密业务状态锁不可用") from exc
+    finally:
+        if fd is not None:
+            try:
+                if locked:
+                    if os.name == "nt":
+                        import msvcrt
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+
 def _enc_load(path: Path, default):
     if not path.is_file():
         return default
@@ -116,18 +161,37 @@ def _enc_save(path: Path, obj) -> bool:
         return False
     finally:
         if tmp is not None:
-            tmp.unlink(missing_ok=True)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _default_state() -> dict:
     return {"pause_until": None, "daily_date": "", "daily_count": 0,
-            "last_push_ts": None, "weather": None, "dedup": {}, "pending": {}}
+            "last_push_ts": None, "weather": None, "dedup": {}, "pending": {}, "reconcile_cursor": 0}
 
 
 def _load_state(now: datetime) -> dict:
-    """读状态 + 例行维护：当日计数跨天归零、防重键只留最近 2 天。"""
-    s = _enc_load(STATE_FILE, None)
-    if not isinstance(s, dict):
+    """读加密状态；有文件但解密/结构损坏时失败关闭，绝不覆盖待对账记录。"""
+    if STATE_FILE.exists():
+        try:
+            s = json.loads(decrypt(STATE_FILE.read_text(encoding="utf-8")))
+            if (not isinstance(s, dict) or not isinstance(s.get("dedup", {}), dict)
+                    or not isinstance(s.get("pending", {}), dict)):
+                raise ValueError("状态结构损坏")
+            for event_id, record in s.get("pending", {}).items():
+                if (not isinstance(event_id, str) or not isinstance(record, dict)
+                        or not isinstance(record.get("payload"), dict)
+                        or not isinstance(record.get("slot"), str)
+                        or not isinstance(record.get("business_date"), str)
+                        or record.get("kind") not in {"care", "phase"}
+                        or record.get("status") not in {"pending", "sent", "failed", "unknown", "expired"}):
+                    raise ValueError("待对账记录损坏")
+        except Exception:  # noqa: BLE001 加密后端可能抛 InvalidTag；只记安全错误类别，不记录密文
+            log_event("CRIT", "emotion", "state_unavailable", STATE_FILE.name)
+            raise StateUnavailable("加密业务状态不可用，已阻止本轮调度") from None
+    else:
         s = _default_state()
     today = now.date().isoformat()
     if s.get("daily_date") != today:
@@ -136,8 +200,7 @@ def _load_state(now: datetime) -> dict:
     cutoff = (now.date() - timedelta(days=DEDUP_KEEP_DAYS - 1)).isoformat()
     s["dedup"] = {k: v for k, v in (s.get("dedup") or {}).items()
                   if isinstance(k, str) and k.split("|", 1)[0] >= cutoff}
-    if not isinstance(s.get("pending"), dict):
-        s["pending"] = {}
+    s.setdefault("pending", {})
     cutoff_pending = (now.date() - timedelta(days=30)).isoformat()
     s["pending"] = {event_id: rec for event_id, rec in s["pending"].items()
                     if isinstance(rec, dict) and
@@ -274,36 +337,64 @@ def _event_id(now: datetime, kind: str, slot: str) -> str:
     return f"emotion:{now:%Y-%m-%d}:{kind}:{slot}"
 
 
-def _sync_pending(state: dict, now: datetime, token: str) -> bool:
-    """查询状态后再更新限流/防重；只有确认 404 才首次投递冻结的事实。"""
+def _sync_pending(state: dict, now: datetime, token: str, only_event_id: str | None = None) -> bool:
+    """锁外限量查询；对账游标轮转，避免多个不可达事件拖垮单次 worker。"""
     ok = True
-    for event_id, record in list(state["pending"].items()):
-        if record.get("status") in {"sent", "failed", "unknown", "expired"}:
+    ids = ([only_event_id] if only_event_id is not None else
+           [event_id for event_id, record in state["pending"].items()
+            if record.get("status") == "pending"])
+    total = len(ids)
+    cursor = int(state.get("reconcile_cursor") or 0) % max(1, total)
+    if only_event_id is None and total > RECONCILE_BATCH:
+        ids = (ids[cursor:] + ids[:cursor])[:RECONCILE_BATCH]
+    for event_id in ids:
+        record = state["pending"].get(event_id)
+        if record is None or record.get("status") != "pending":
             continue
         result = probe_push_event(event_id, token)
         if result["status"] == "unavailable":
             ok = False
             continue
         if result["status"] == "missing":
-            if record["business_date"] != now.date().isoformat():
-                record["status"] = "expired"
-                if not _enc_save(STATE_FILE, state):
-                    ok = False
-                continue
-            if not post_push(record["payload"], token):
+            payload = None
+            with _state_lock():
+                fresh = _load_state(now)
+                current = fresh["pending"].get(event_id)
+                if current and current["status"] == "pending":
+                    settings = _settings()
+                    disabled = (current["kind"] == "care" and not settings.get("emotion_on", True)
+                                or current["kind"] == "phase" and not settings.get("tasks_report_on", True))
+                    if (disabled or _paused(fresh, now)
+                            or current["business_date"] != now.date().isoformat()):
+                        current["status"] = "expired"
+                        if not _enc_save(STATE_FILE, fresh):
+                            ok = False
+                    else:
+                        payload = current["payload"]
+            if payload is not None and not post_push(payload, token):
                 ok = False
             continue
         status = result["state"]
         if status not in {"sent", "failed", "unknown"}:
             continue
-        record["status"] = status
-        if status == "sent":
-            state["dedup"][record["slot"]] = time.time()
-            if record["kind"] == "care" and state["daily_date"] == record["business_date"]:
-                state["daily_count"] += 1
-            state["last_push_ts"] = time.time()
-        if not _enc_save(STATE_FILE, state):
-            ok = False
+        with _state_lock():
+            fresh = _load_state(now)
+            current = fresh["pending"].get(event_id)
+            if current and current["status"] == "pending":
+                current["status"] = status
+                if status == "sent":
+                    fresh["dedup"][current["slot"]] = time.time()
+                    if current["kind"] == "care" and fresh["daily_date"] == current["business_date"]:
+                        fresh["daily_count"] += 1
+                    fresh["last_push_ts"] = time.time()
+                if not _enc_save(STATE_FILE, fresh):
+                    ok = False
+    if only_event_id is None and total > RECONCILE_BATCH:
+        with _state_lock():
+            fresh = _load_state(now)
+            fresh["reconcile_cursor"] = cursor + len(ids)
+            if not _enc_save(STATE_FILE, fresh):
+                ok = False
     return ok
 
 
@@ -311,16 +402,35 @@ def _reserve_and_send(state: dict, now: datetime, kind: str, slot: str,
                       facts: dict, intent: str) -> int:
     """先持久化不可变业务事件，再按状态提交；POST 200 不计入已发。"""
     event_id = _event_id(now, kind, slot.split("|", 1)[1])
-    if event_id not in state["pending"]:
+    with _state_lock():
+        fresh = _load_state(now)
+        if (_paused(fresh, now) or slot in fresh["dedup"]
+                or any(rec.get("slot") == slot for rec in fresh["pending"].values())):
+            return 0
+        if kind == "care":
+            limits = _settings()
+            count = sum(1 for rec in fresh["pending"].values()
+                        if rec.get("kind") == "care" and rec.get("business_date") == now.date().isoformat()
+                        and rec.get("status") == "pending")
+            if fresh["daily_count"] + count >= int(limits.get("daily_limit", 4)):
+                return 0
+            interval = int(limits.get("min_interval_hours", 3)) * 3600
+            if (fresh.get("last_push_ts") and time.time() - float(fresh["last_push_ts"]) < interval
+                    or any(rec.get("kind") == "care" and rec.get("status") in {"pending", "unknown"}
+                           and time.time() - float(rec.get("reserved_at") or 0) < interval
+                           for rec in fresh["pending"].values())):
+                return 0
         body = {"type": "reminder", "event_id": event_id,
                 "facts": facts, "intent": intent, "must_preserve": []}
-        state["pending"][event_id] = {"slot": slot, "kind": kind,
+        fresh["pending"][event_id] = {"slot": slot, "kind": kind,
                                        "business_date": now.date().isoformat(),
                                        "reserved_at": time.time(),
                                        "payload": body, "status": "pending"}
-        if not _enc_save(STATE_FILE, state):
+        if kind == "care":
+            fresh["weather"] = state["weather"]
+        if not _enc_save(STATE_FILE, fresh):
             return 1
-    return 0 if _sync_pending(state, now, load_token(MODULE_DIR)) else 1
+    return 0 if _sync_pending(fresh, now, load_token(MODULE_DIR), only_event_id=event_id) else 1
 
 
 # ---------- 入口分支 ----------
@@ -361,8 +471,13 @@ def _window_run(dry: bool) -> int:
     if not topics:
         print(f"[emotion] 无话题，本小时不发（{key}）")
         if not dry:
-            state["dedup"][key] = time.time()  # 无事件时记“已评估”；有事件时只在 sent 后记“已发”
-            _enc_save(STATE_FILE, state)
+            with _state_lock():
+                fresh = _load_state(now)
+                if not _paused(fresh, now) and key not in fresh["dedup"]:
+                    fresh["weather"] = base
+                    fresh["dedup"][key] = time.time()  # 无话题记“已评估”
+                    if not _enc_save(STATE_FILE, fresh):
+                        return 1
         return 0
     if dry:
         print(f"[emotion][dry] 有话题（{key}）：{topics}")
@@ -395,8 +510,12 @@ def _phase_run(phase: str | None, dry: bool) -> int:
     if not near:
         print(f"[emotion] {phase} 窗口内无任务，跳过")
         if not dry:
-            state["dedup"][key] = time.time()
-            _enc_save(STATE_FILE, state)
+            with _state_lock():
+                fresh = _load_state(now)
+                if not _paused(fresh, now) and key not in fresh["dedup"]:
+                    fresh["dedup"][key] = time.time()
+                    if not _enc_save(STATE_FILE, fresh):
+                        return 1
         return 0
     facts = _phase_facts(phase, near, now)
     if dry:
@@ -426,17 +545,21 @@ def _inbound(text: str, dry: bool = False) -> int:
         print(f"[emotion][dry] inbound 分类: {kind}（{tag or '-'}）")
         return 0
     if kind == "pause":
-        state = _load_state(datetime.now())
         end = datetime.now().replace(hour=DAY_END, minute=0, second=0, microsecond=0)
-        state["pause_until"] = end.timestamp()  # 21 点后写入自然过期 = 忽略，无特判
-        _enc_save(STATE_FILE, state)
+        with _state_lock():
+            state = _load_state(datetime.now())
+            state["pause_until"] = end.timestamp()  # 21 点后自然过期
+            if not _enc_save(STATE_FILE, state):
+                return 1
         log_event("INFO", "emotion", "paused", f"until {end:%Y-%m-%d %H:%M}")
         print(PAUSE_REPLY)
         return 0
     if kind == "resume":
-        state = _load_state(datetime.now())
-        state["pause_until"] = None
-        _enc_save(STATE_FILE, state)
+        with _state_lock():
+            state = _load_state(datetime.now())
+            state["pause_until"] = None
+            if not _enc_save(STATE_FILE, state):
+                return 1
         log_event("INFO", "emotion", "resumed", "")
         print(RESUME_REPLY)
         return 0
@@ -464,9 +587,11 @@ def _inspect() -> int:
 
 
 def _unpause() -> int:
-    state = _load_state(datetime.now())
-    state["pause_until"] = None
-    _enc_save(STATE_FILE, state)
+    with _state_lock():
+        state = _load_state(datetime.now())
+        state["pause_until"] = None
+        if not _enc_save(STATE_FILE, state):
+            return 1
     print("[emotion] 已清除暂停状态")
     return 0
 
@@ -474,6 +599,14 @@ def _unpause() -> int:
 def main(argv: list[str] | None = None) -> int:
     argv = argv or sys.argv[1:]
     dry = "--dry-run" in argv
+    try:
+        return _dispatch(argv, dry)
+    except StateUnavailable:
+        return 1
+
+
+def _dispatch(argv: list[str], dry: bool) -> int:
+    """各入口共用推送账本的失败关闭边界。"""
     if "--reconcile" in argv:
         if dry:
             return 0

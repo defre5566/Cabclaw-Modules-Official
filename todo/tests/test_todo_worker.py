@@ -478,6 +478,13 @@ def test_fact_times_and_early_cross_day_repeat():
     assert "start_time" not in tw._reminder_payload(TODAY, "14:00", [without_start])["facts"]["tasks"][0]
 
 
+def test_quoted_task_name_is_fact_but_not_invalid_explicit_anchor():
+    task = tw._norm_task(_task("a", TODAY.isoformat(), "14:00", text='复核 "A\\B"\n材料'), TODAY)
+    payload = tw._reminder_payload(TODAY, "14:00", [task])
+    assert payload["facts"]["tasks"][0]["task"] == '复核 "A\\B"\n材料'
+    assert payload["must_preserve"] == []  # 宿主从 task 字段提取名字，显式 JSON 锚点不应导致 400
+
+
 def test_post_receipt_lost_or_probe_unavailable_does_not_change_key(monkeypatch):
     tmp = Path(tempfile.mkdtemp())
     ctx = _mk(tmp)
@@ -513,3 +520,23 @@ def test_failed_event_stays_terminal_no_new_key(monkeypatch):
     assert tw.main([]) == 0
     assert json.loads(tw.PENDING_FILE.read_text(encoding="utf-8"))[event_id]["status"] == "unknown"
     assert len(ctx["pushes"]) == 1 and not tw.SENT_FILE.exists()
+
+
+def test_pending_events_are_reconciled_in_bounded_rotating_batches():
+    tmp = Path(tempfile.mkdtemp())
+    _mk(tmp)
+    pending = {
+        f"todo:20260821:test:{n}": {
+            "payload": {"type": "reminder", "event_id": f"todo:20260821:test:{n}",
+                        "facts": {"tasks": [{"task": f"任务{n}"}]}, "must_preserve": []},
+            "task_keys": [f"{TODAY}|{n}"], "status": "pending", "created_at": TODAY.isoformat(),
+        } for n in range(5)
+    }
+    assert tw.save_sent_json(tw.PENDING_FILE, pending)
+    queries = []
+    tw.probe_push_event = lambda event_id, token: (queries.append(event_id), {"status": "unavailable"})[1]
+    for attempt in range(3):
+        assert tw._reconcile_pending(pending, {}, "synthetic-token", TODAY) is False
+        assert len(queries) == (attempt + 1) * 2
+    assert set(queries) == {key for key in pending if key != "__cursor__"}
+    assert isinstance(tw._load_pending()["__cursor__"], int)

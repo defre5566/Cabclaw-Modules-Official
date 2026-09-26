@@ -14,6 +14,21 @@
       "id": "push-reconcile",
       "every": "1m",
       "args": ["--reconcile"]
+    },
+    {
+      "id": "morning",
+      "cron": "0 9 * * *",
+      "args": ["--phase", "morning"]
+    },
+    {
+      "id": "midday",
+      "cron": "0 14 * * *",
+      "args": ["--phase", "midday"]
+    },
+    {
+      "id": "evening",
+      "cron": "0 18 * * *",
+      "args": ["--phase", "evening"]
     }
   ],
   "schedule_from_settings": [

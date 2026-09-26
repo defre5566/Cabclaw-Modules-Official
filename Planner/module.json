@@ -8,6 +8,16 @@
       "id": "push-reconcile",
       "every": "1m",
       "args": ["--reconcile"]
+    },
+    {
+      "id": "morning",
+      "cron": "30 8 * * *",
+      "args": ["--phase", "morning"]
+    },
+    {
+      "id": "evening",
+      "cron": "0 21 * * *",
+      "args": ["--phase", "evening"]
     }
   ],
   "schedule_from_settings": [
