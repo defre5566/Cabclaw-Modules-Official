@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, time
 from pathlib import Path
+from typing import Sequence
 
 TASK_LINE = re.compile(r"^-\s+\[( |x|X)\]\s+(.+)$")
 DUE = re.compile(r"📅\s*(\d{4}-\d{2}-\d{2})")
@@ -17,6 +18,66 @@ DONE = re.compile(r"✅\s*(\d{4}-\d{2}-\d{2})")
 RECUR = re.compile(r"🔁")
 TAG = re.compile(r"#todo/(\S+)")
 PRIORITY = {"⏫": 1, "🔺": 2, "🔼": 3, "🔽": 4, "⏬": 5}
+
+
+def format_task_line(text: str, due: date | str, *, at: time | str | None = None,
+                     remind_min: int | None = None, tags: Sequence[str] = (),
+                     tag_prefix: str = "#todo/", done_date: date | str | None = None) -> str:
+    """生成单条 Obsidian Tasks 行；⏰ 是提醒基准时刻，不代表开始或到期。
+
+    未完成行的顺序固定为正文 → ⏰ → 🔔 → 标签 → 📅；完成行仍以 ✅ 收尾。
+    不从正文猜测时间含义，也不为独立开始/到期时刻增加第二个 ⏰。
+    """
+    if not isinstance(text, str) or not text.strip() or any(c in text for c in "\r\n⏰🔔📅✅"):
+        raise ValueError("任务正文为空或含任务字段标记/换行")
+    if text.lstrip().startswith("- ["):
+        raise ValueError("正文不能包含任务行前缀")
+    try:
+        if not isinstance(due, date) and (not isinstance(due, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", due)):
+            raise ValueError("invalid due date")
+        if done_date is not None and not isinstance(done_date, date) and (
+                not isinstance(done_date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", done_date)):
+            raise ValueError("invalid done date")
+        due_date = date.fromisoformat(str(due))
+        completed = date.fromisoformat(str(done_date)) if done_date is not None else None
+    except (TypeError, ValueError) as exc:
+        raise ValueError("日期须为 YYYY-MM-DD") from exc
+
+    if at is None:
+        clock = None
+    elif isinstance(at, time):
+        clock = at.strftime("%H:%M")
+    elif isinstance(at, str) and re.fullmatch(r"\d{1,2}:\d{2}", at):
+        try:
+            hh, mm = map(int, at.split(":"))
+            clock = time(hh, mm).strftime("%H:%M")
+        except ValueError as exc:
+            raise ValueError("时刻须为有效 HH:MM") from exc
+    else:
+        raise ValueError("时刻须为有效 HH:MM")
+
+    if (remind_min is not None and
+            (type(remind_min) is not int or not 0 <= remind_min <= 1440 or clock is None)):
+        raise ValueError("提前提醒须有基准时刻，且为 0–1440 分钟")
+    if isinstance(tags, (str, bytes)) or not isinstance(tags, Sequence):
+        raise ValueError("标签必须是名称列表")
+    if tags and (not tag_prefix or not tag_prefix.startswith("#") or
+                 re.search(r"\s|[⏰🔔📅✅]", tag_prefix)):
+        raise ValueError("有标签时须提供明确的 Obsidian 标签前缀")
+
+    parts = ["- [x]" if completed else "- [ ]", text.strip()]
+    if clock:
+        parts.extend(("⏰", clock))
+    if remind_min:
+        parts.append(f"🔔提前{remind_min}分钟")
+    for tag in tags:
+        if not isinstance(tag, str) or not tag or re.search(r"\s|[#⏰🔔📅✅]", tag):
+            raise ValueError("标签名须为单个不含标记的词")
+        parts.append(f"{tag_prefix}{tag}")
+    parts.extend(("📅", due_date.isoformat()))
+    if completed:
+        parts.extend(("✅", completed.isoformat()))
+    return " ".join(parts)
 
 
 @dataclass

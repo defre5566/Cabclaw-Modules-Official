@@ -464,7 +464,7 @@ def _closing_hint_evening(tasks: dict) -> str:
 
 def _task_facts(items: list[dict]) -> list[dict]:
     """把 shared 任务按明确字段传给宿主；不预写面向用户的段落。"""
-    return [{"task": str(t.get("text") or ""), "due": t.get("due"), "due_time": t.get("time"),
+    return [{"task": str(t.get("text") or ""), "due": t.get("due"), "time": t.get("time"),
              "start_time": t.get("start_time"), "start_date": t.get("start_date"),
              "tags": list(t.get("tags") or [])}
             for t in items]
