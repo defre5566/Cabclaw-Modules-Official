@@ -50,6 +50,7 @@ DATA_DIR = MODULE_DIR.parent / "modules_data" / "Planner"  # 用户数据区
 MORNING_SENT = DATA_DIR / "morning_sent.json"
 EVENING_SENT = DATA_DIR / "evening_sent.json"
 PUSH_EVENTS = DATA_DIR / "push_events.json"
+RECONCILE_BATCH = 2  # 每分钟最多查 2 个业务 slot；每个含文字及至多一个附件
 COUNTDOWN_FILE = DATA_DIR / "countdown.json"
 BRIEFING_DIR = DATA_DIR / "briefing"
 
@@ -471,8 +472,10 @@ def _task_facts(items: list[dict]) -> list[dict]:
 
 def _calendar_facts(today: date) -> dict:
     lunar = get_lunar(today)
+    month = str(lunar.get("month") or "")
     return {"business_date": today.isoformat(), "weekday": "一二三四五六日"[today.weekday()],
-            "address": _address(), "lunar_month": lunar.get("month"), "lunar_day": lunar.get("day"),
+            "address": _address(), "lunar_month": month + "月" if month and not month.endswith("月") else month,
+            "lunar_day": lunar.get("day"),
             "jieqi": lunar.get("jieqi"), "holiday": is_holiday(today),
             "fufu": get_fufu(today), "jiujiu": get_jiujiu(today)}
 
@@ -515,11 +518,12 @@ def _load_push_events() -> dict:
     if not PUSH_EVENTS.exists():
         return {}
     records = json.loads(PUSH_EVENTS.read_text(encoding="utf-8"))
-    if not isinstance(records, dict) or any(
-        not isinstance(value, dict) or not isinstance(value.get("reminder"), dict)
-        or value.get("phase") not in {"morning", "evening"}
-        for value in records.values()
-    ):
+    if (not isinstance(records, dict)
+            or ("__cursor__" in records and
+                (type(records["__cursor__"]) is not int or records["__cursor__"] < 0))
+            or any(not isinstance(value, dict) or not isinstance(value.get("reminder"), dict)
+                   or value.get("phase") not in {"morning", "evening"}
+                   for slot, value in records.items() if slot != "__cursor__")):
         raise ValueError("早晚报推送账本损坏")
     return records
 
@@ -532,14 +536,25 @@ def _sync_event(ledger: dict, record: dict, today: date, token: str) -> bool:
     if result["status"] == "unavailable":
         return False
     if result["status"] == "missing":
-        if record["business_date"] != today.isoformat():
-            record["text_state"] = "expired"
+        if record.get("text_state") == "sent":
+            # 已记录 SDK 成功，但宿主事件失踪：依赖关系无从验证，不重发文字或文件。
+            if record.get("file") and record.get("file_state") not in {"sent", "failed", "unknown"}:
+                record["file_state"] = "blocked"
             return save_sent_json(PUSH_EVENTS, ledger)
-        if not post_push(record["reminder"], token):
-            return False
-        record["text_state"] = "queued"
-        if not save_sent_json(PUSH_EVENTS, ledger):
-            return False
+        else:
+            settings, _corrupt = _settings()
+            enabled = bool(settings.get("planner_on", True)) and (phase != "evening" or
+                      bool(settings.get("evening_on", True)))
+            if record["business_date"] != today.isoformat() or not enabled:
+                record["text_state"] = "expired"
+                if record.get("file"):
+                    record["file_state"] = "blocked"
+                return save_sent_json(PUSH_EVENTS, ledger)
+            if not post_push(record["reminder"], token):
+                return False
+            record["text_state"] = "queued"
+            if not save_sent_json(PUSH_EVENTS, ledger):
+                return False
     else:
         record["text_state"] = result["state"]
         if result["state"] == "sent":
@@ -559,7 +574,10 @@ def _sync_event(ledger: dict, record: dict, today: date, token: str) -> bool:
     if file_result["status"] == "unavailable":
         return False
     if file_result["status"] == "missing":
-        if record["text_state"] in {"failed", "unknown", "expired"}:
+        settings, _corrupt = _settings()
+        enabled = bool(settings.get("planner_on", True)) and (phase != "evening" or
+                  bool(settings.get("evening_on", True)))
+        if record["text_state"] in {"failed", "unknown", "expired"} or not enabled:
             record["file_state"] = "blocked"
         elif record["business_date"] != today.isoformat():
             record["file_state"] = "expired"
@@ -582,18 +600,33 @@ def _reconcile_events(today: date) -> bool:
         ledger = _load_push_events()
         if not ledger:
             return True
+        cutoff = (today - timedelta(days=30)).isoformat()
+        expired = [slot for slot, event in ledger.items() if slot != "__cursor__"
+                   if event["business_date"] < cutoff
+                   and event.get("text_state") in {"sent", "failed", "unknown", "expired"}
+                   and (not event.get("file") or event.get("file_state") in
+                        {"sent", "failed", "unknown", "expired", "blocked"})]
+        if expired:
+            for slot in expired:
+                ledger.pop(slot)
+            if not save_sent_json(PUSH_EVENTS, ledger):
+                return False
         token = load_token(MODULE_DIR)
+        active = [(slot, event) for slot, event in ledger.items() if slot != "__cursor__"
+                  and not (event.get("text_state") in {"sent", "failed", "unknown", "expired"}
+                           and (not event.get("file") or event.get("file_state") in
+                                {"sent", "failed", "unknown", "expired", "blocked"}))]
+        if not active:
+            return True
+        cursor = int(ledger.get("__cursor__") or 0) % len(active)
+        batch = (active[cursor:] + active[:cursor])[:RECONCILE_BATCH]
         ok = True
-        for event in ledger.values():
-            if event.get("text_state") in {"failed", "unknown", "expired"} and (
-                    not event.get("file") or event.get("file_state") in
-                    {"sent", "failed", "unknown", "expired", "blocked"}):
-                continue
-            if event.get("text_state") == "sent" and (
-                    not event.get("file") or event.get("file_state") in
-                    {"sent", "failed", "unknown", "expired", "blocked"}):
-                continue
+        for _slot, event in batch:
             if not _sync_event(ledger, event, today, token):
+                ok = False
+        if len(active) > RECONCILE_BATCH:
+            ledger["__cursor__"] = cursor + len(batch)
+            if not save_sent_json(PUSH_EVENTS, ledger):
                 ok = False
         return ok
     except Exception as exc:
@@ -635,6 +668,8 @@ def morning(today: date, dry: bool) -> int:
             log_event("ERROR", "Planner", "morning_reconcile_fail", type(exc).__name__)
             return 1
     settings, settings_corrupt = _settings()
+    if not settings.get("planner_on", True):
+        return 0
 
     tasks = collect_tasks(today)
     countdown = collect_countdown(today, prune=not dry)
@@ -716,6 +751,8 @@ def evening(today: date, dry: bool) -> int:
             log_event("ERROR", "Planner", "evening_reconcile_fail", type(exc).__name__)
             return 1
     settings, settings_corrupt = _settings()
+    if not settings.get("planner_on", True) or not settings.get("evening_on", True):
+        return 0
 
     tasks = collect_tasks(today)
     countdown = collect_countdown(today, prune=not dry)
@@ -766,7 +803,7 @@ def main(argv: list[str] | None = None) -> int:
             phase = argv[i + 1]
     today = date.today()
     if "--reconcile" in argv:
-        return 0 if _reconcile_events(today) else 1
+        return 0 if dry or _reconcile_events(today) else 1
     if not dry:
         prune_state_file(MORNING_SENT)
         prune_state_file(EVENING_SENT)

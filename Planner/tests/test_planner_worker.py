@@ -561,6 +561,108 @@ def test_reconcile_before_report_event_does_not_create_report():
     assert ctx["pushes"] == [] and not pw.PUSH_EVENTS.exists()
 
 
+def test_reconcile_dry_run_does_not_query_or_write():
+    tmp = Path(tempfile.mkdtemp())
+    ctx = _mk(tmp)
+    pw.probe_push_event = lambda *_args: pytest.fail("dry-run 不得查询推送状态")
+    assert pw.main(["--reconcile", "--dry-run"]) == 0
+    assert ctx["pushes"] == [] and not pw.PUSH_EVENTS.exists()
+
+
+def test_report_switches_block_new_dispatch_but_not_reconciliation():
+    tmp = Path(tempfile.mkdtemp())
+    ctx = _mk(tmp)
+    pw._settings = lambda: ({**pw.DEFAULT_SETTINGS, "planner_on": False}, False)
+    assert pw.morning(TODAY, dry=False) == 0
+    assert pw.evening(TODAY, dry=False) == 0
+    assert ctx["pushes"] == [] and not pw.PUSH_EVENTS.exists()
+
+    pw._settings = lambda: ({**pw.DEFAULT_SETTINGS, "evening_on": False}, False)
+    assert pw.evening(TODAY, dry=False) == 0
+    assert ctx["pushes"] == []
+    assert pw.morning(TODAY, dry=False) == 0
+    event_id = f"planner:{TODAY}:morning"
+    ctx["events"][event_id] = "sent"
+    pw._settings = lambda: ({**pw.DEFAULT_SETTINGS, "planner_on": False}, False)
+    assert pw.main(["--reconcile"]) == 0
+    assert json.loads(pw.MORNING_SENT.read_text(encoding="utf-8"))[TODAY.isoformat()]
+
+
+def test_disabled_report_does_not_first_submit_reserved_event():
+    tmp = Path(tempfile.mkdtemp())
+    ctx = _mk(tmp)
+    pw._settings = lambda: ({**pw.DEFAULT_SETTINGS}, False)
+    original = pw.post_push
+    pw.post_push = lambda *_args: False  # 本地冻结记录，但宿主明确还没有接受
+    assert pw.morning(TODAY, dry=False) == 1
+    pw.post_push = original
+    ctx["pushes"].clear()
+    pw._settings = lambda: ({**pw.DEFAULT_SETTINGS, "planner_on": False}, False)
+    assert pw.main(["--reconcile"]) == 0
+    record = json.loads(pw.PUSH_EVENTS.read_text(encoding="utf-8"))[f"{TODAY}:morning"]
+    assert record["text_state"] == "expired" and ctx["pushes"] == []
+
+
+def test_previous_day_absent_report_blocks_unsent_attachment():
+    tmp = Path(tempfile.mkdtemp())
+    ctx = _mk(tmp)
+    pw.BRIEFING_DIR.mkdir(exist_ok=True)
+    brief = pw.BRIEFING_DIR / f"{TODAY}.html"
+    brief.write_text("<html>合成</html>", encoding="utf-8")
+    payload, file_payload = pw._report_payload(
+        "morning", TODAY, {"today": [], "overdue": [], "done_today": []},
+        [], dict(pw.DEFAULT_SETTINGS), False, brief)
+    record = {"business_date": TODAY.isoformat(), "phase": "morning", "reminder": payload,
+              "file": file_payload, "text_state": "pending", "file_state": "pending"}
+    ledger = {f"{TODAY}:morning": record}
+    assert pw._sync_event(ledger, record, TOMORROW, "mock") is True
+    assert record["text_state"] == "expired" and record["file_state"] == "blocked"
+    assert ctx["pushes"] == []
+
+
+def test_sent_text_missing_from_host_does_not_resend_file():
+    tmp = Path(tempfile.mkdtemp())
+    ctx = _mk(tmp)
+    brief = pw.DATA_DIR / "briefing" / f"{TODAY}.html"
+    brief.parent.mkdir()
+    brief.write_text("<html>合成</html>", encoding="utf-8")
+    payload, attached = pw._report_payload(
+        "morning", TODAY, {"today": [], "overdue": [], "done_today": []},
+        [], dict(pw.DEFAULT_SETTINGS), False, brief)
+    record = {"business_date": TODAY.isoformat(), "phase": "morning", "reminder": payload,
+              "file": attached, "text_state": "sent", "file_state": "pending"}
+    ledger = {f"{TODAY}:morning": record}
+    assert pw._sync_event(ledger, record, TODAY, "mock") is True
+    assert record["text_state"] == "sent" and record["file_state"] == "blocked"
+    assert ctx["pushes"] == []
+
+
+def test_reconcile_rotates_large_pending_report_backlog():
+    tmp = Path(tempfile.mkdtemp())
+    ctx = _mk(tmp)
+    ledger = {}
+    for idx in range(5):
+        slot = f"{TODAY}:slot{idx}"
+        ledger[slot] = {"business_date": TODAY.isoformat(), "phase": "morning",
+                        "reminder": {"event_id": f"planner:{TODAY}:slot{idx}",
+                                     "facts": {"phase": "morning"}, "type": "reminder"},
+                        "file": None, "text_state": "pending", "file_state": None}
+    assert pw.save_sent_json(pw.PUSH_EVENTS, ledger)
+    checked = []
+
+    def unavailable(event_id, token):
+        checked.append(event_id)
+        return {"status": "unavailable"}
+
+    pw.probe_push_event = unavailable
+    for n in range(3):
+        assert pw._reconcile_events(TODAY) is False
+        assert len(checked) == (n + 1) * 2
+    assert set(checked) == {rec["reminder"]["event_id"] for rec in ledger.values()}
+    assert isinstance(pw._load_push_events()["__cursor__"], int)
+    assert ctx["pushes"] == []
+
+
 # ---------- 收尾提示（方向选择） ----------
 
 def test_closing_hint_morning_priority():
@@ -607,6 +709,14 @@ def test_greeting_address():
     pw._address = lambda: "老板"
     assert pw._evening_greeting() == "老板，晚上好呀！"
     pw._address = orig
+
+
+def test_lunar_month_keeps_month_character():
+    tmp = Path(tempfile.mkdtemp())
+    _mk(tmp)
+    pw.get_lunar = lambda _day: {"jieqi": None, "month": "八", "day": "十五"}
+    assert "农历八月十五" in pw._greeting_head(TODAY)
+    assert pw._calendar_facts(TODAY)["lunar_month"] == "八月"
 
 
 # ---------- 素材单元 ----------

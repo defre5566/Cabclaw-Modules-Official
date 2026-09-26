@@ -339,14 +339,24 @@ def test_feedback_prune_expired(ew_env, monkeypatch):
     assert len(fb) == 1 and fb[0]["text"] == "又累了"
 
 
-def test_state_decrypt_fail_fallback(ew_env, monkeypatch):
+def test_state_decrypt_fail_closed(ew_env, monkeypatch):
     ew, calls = ew_env, ew_env.calls
     set_clock(ew, monkeypatch, datetime(2026, 9, 4, 8, 30))
     ew.DATA_DIR.mkdir(parents=True, exist_ok=True)
     ew.STATE_FILE.write_text("garbage-not-encrypted")  # 密文坏
     monkeypatch.setattr(ew, "decrypt", lambda s: (_ for _ in ()).throw(ValueError("bad")))
-    assert ew.main([]) == 0  # 按空状态继续，不瘫
-    assert len(calls["push"]) == 1
+    assert ew.main([]) == 1  # 不可按空状态重生成业务键，也不能覆盖原文件
+    assert ew.STATE_FILE.read_text() == "garbage-not-encrypted"
+    assert calls["push"] == []
+
+
+def test_state_pending_record_corrupt_fails_closed(ew_env, monkeypatch):
+    ew, calls = ew_env, ew_env.calls
+    set_clock(ew, monkeypatch, datetime(2026, 9, 4, 8, 30))
+    broken = {**ew._default_state(), "pending": {"lost-event": {"status": "pending"}}}
+    ew._enc_save(ew.STATE_FILE, broken)
+    assert ew.main(["--reconcile"]) == 1
+    assert ew._enc_load(ew.STATE_FILE, {}) == broken and calls["push"] == []
 
 
 def test_enc_roundtrip(ew_env, monkeypatch):
@@ -392,6 +402,88 @@ def test_unknown_status_keeps_business_key_without_sent_counter(ew_env, monkeypa
     assert len(calls["push"]) == 1
     assert read_state(ew)["pending"][event_id]["status"] == "unknown"
     assert read_state(ew)["daily_count"] == 0
+
+
+def test_pause_prevents_pending_event_first_submission(ew_env, monkeypatch):
+    ew, calls = ew_env, ew_env.calls
+    set_clock(ew, monkeypatch, datetime(2026, 9, 4, 8, 30))
+    state = ew._default_state()
+    state["pending"] = {
+        "emotion:2026-09-04:care:8": {
+            "slot": "2026-09-04|8", "kind": "care", "business_date": "2026-09-04",
+            "reserved_at": datetime(2026, 9, 4, 8, 30).timestamp(),
+            "payload": {"type": "reminder", "event_id": "emotion:2026-09-04:care:8",
+                        "facts": {"period": 8}, "intent": "关怀", "must_preserve": []},
+            "status": "pending",
+        },
+    }
+    state["pause_until"] = datetime(2026, 9, 4, 21).timestamp()
+    write_state(ew, state)
+    assert ew.main(["--reconcile"]) == 0
+    assert calls["push"] == []
+    assert read_state(ew)["pending"]["emotion:2026-09-04:care:8"]["status"] == "expired"
+
+
+def test_disabled_care_does_not_first_submit_reserved_event(ew_env, monkeypatch):
+    ew, calls = ew_env, ew_env.calls
+    set_clock(ew, monkeypatch, datetime(2026, 9, 4, 8, 30))
+    monkeypatch.setattr(ew, "post_push", lambda *_: False)
+    assert ew.main([]) == 1
+    assert read_state(ew)["pending"]
+    ew.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ew.SETTINGS_FILE.write_text(json.dumps({"emotion_on": False}), encoding="utf-8")
+    assert ew.main(["--reconcile"]) == 0
+    record = next(iter(read_state(ew)["pending"].values()))
+    assert record["status"] == "expired" and calls["push"] == []
+
+
+def test_pause_arrives_during_status_probe_is_not_overwritten(ew_env, monkeypatch):
+    ew, calls = ew_env, ew_env.calls
+    set_clock(ew, monkeypatch, datetime(2026, 9, 4, 8, 30))
+    assert ew.main([]) == 0
+    event_id = calls["push"][0]["event_id"]
+    calls["events"][event_id] = "sent"
+
+    def probe_then_pause(_id, _token):
+        assert _id == event_id
+        assert ew._inbound("暂停关心") == 0
+        return {"status": "found", "state": "sent"}
+
+    monkeypatch.setattr(ew, "probe_push_event", probe_then_pause)
+    assert ew.main(["--reconcile"]) == 0
+    recovered = read_state(ew)
+    assert recovered["pause_until"] == datetime(2026, 9, 4, 21).timestamp()
+    assert recovered["pending"][event_id]["status"] == "sent"
+    assert recovered["daily_count"] == 1
+
+
+def test_reconcile_cursor_processes_at_most_two_events_per_tick(ew_env, monkeypatch):
+    ew, calls = ew_env, ew_env.calls
+    set_clock(ew, monkeypatch, datetime(2026, 9, 4, 12, 0))
+    state = ew._default_state()
+    state["pending"] = {
+        f"emotion:2026-09-04:care:{hour}": {
+            "slot": f"2026-09-04|{hour}", "kind": "care", "business_date": "2026-09-04",
+            "reserved_at": datetime(2026, 9, 4, hour).timestamp(),
+            "payload": {"type": "reminder", "event_id": f"emotion:2026-09-04:care:{hour}",
+                        "facts": {"period": hour}, "intent": "关怀", "must_preserve": []},
+            "status": "pending"} for hour in range(6, 12)
+    }
+    write_state(ew, state)
+    queried = []
+
+    def unavailable(event_id, _token):
+        queried.append(event_id)
+        return {"status": "unavailable"}
+
+    monkeypatch.setattr(ew, "probe_push_event", unavailable)
+    assert ew.main(["--reconcile"]) == 1
+    assert len(queried) == 2
+    assert ew.main(["--reconcile"]) == 1
+    assert len(queried) == 4
+    assert ew.main(["--reconcile"]) == 1
+    assert len(queried) == 6
+    assert set(queried) == set(state["pending"])
 
 
 def test_phase_facts_never_send_internal_instructions(ew_env, monkeypatch):

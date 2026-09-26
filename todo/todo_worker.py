@@ -35,6 +35,7 @@ TASKS_DIR = DATA_DIR / "tasks"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 SCAN_CACHE_FILE = DATA_DIR / "scan_cache.json"
 SHARED_NAME = "tasks"
+RECONCILE_BATCH = 2  # 单次最多查 2 条状态；其余轮转到下一分钟
 
 DEFAULT_TAGS = ["工作", "学习", "生活", "家庭", "购物", "健康", "娱乐"]
 DEFAULT_SETTINGS = {
@@ -450,7 +451,9 @@ def _reminder_payload(day: date, trigger: str, items: list[dict]) -> dict:
             if t.get("start_date"):
                 item["start_date"] = t["start_date"]
         facts.append(item)
-        if len(t["text"]) <= 120:
+        # 宿主会按 task 字段强制保留原名；显式锚点还须出现在 JSON 原文里。
+        # 含引号/反斜杠/换行的任务名在 JSON 中被转义，不能直接作为 must_preserve 传入。
+        if len(t["text"]) <= 120 and t["text"] in json.dumps(item, ensure_ascii=False):
             anchors.append(t["text"])
     return {"type": "reminder", "event_id": _event_id(day, trigger, items),
             "facts": {"tasks": facts},
@@ -461,10 +464,23 @@ def _reminder_payload(day: date, trigger: str, items: list[dict]) -> dict:
 def _reconcile_pending(pending: dict, sent: dict, token: str, today: date) -> bool:
     """对账并投递已持久保存的业务事件；不可用时不换键重发。"""
     ok = True
-    for event_id, record in list(pending.items()):
+    active = [key for key, record in pending.items()
+              if key != "__cursor__" and record.get("status") == "pending"]
+    if not active:
+        return True
+    cursor = int(pending.get("__cursor__") or 0) % len(active)
+    batch = (active[cursor:] + active[:cursor])[:RECONCILE_BATCH]
+    for event_id in batch:
+        record = pending[event_id]
         if not isinstance(record, dict) or not isinstance(record.get("payload"), dict):
             continue
-        if record.get("status") in {"sent", "failed", "unknown"}:
+        if record.get("status") in {"sent", "failed", "unknown", "expired"}:
+            continue
+        # 已发防重落盘成功但 pending 终态落盘中断时，以更强的业务证据为准。
+        if record["task_keys"] and all(key in sent for key in record["task_keys"]):
+            record["status"] = "sent"
+            if not save_sent_json(PENDING_FILE, pending):
+                ok = False
             continue
         result = probe_push_event(event_id, token)
         if result["status"] == "found":
@@ -490,6 +506,10 @@ def _reconcile_pending(pending: dict, sent: dict, token: str, today: date) -> bo
                 ok = False
             continue
         ok = False
+    if len(active) > RECONCILE_BATCH:
+        pending["__cursor__"] = cursor + len(batch)
+        if not save_sent_json(PENDING_FILE, pending):
+            ok = False
     return ok
 
 
@@ -498,23 +518,28 @@ def _load_pending() -> dict:
     if not PENDING_FILE.exists():
         return {}
     data = json.loads(PENDING_FILE.read_text(encoding="utf-8"))
-    if not isinstance(data, dict) or any(
-        not isinstance(record, dict) or not isinstance(record.get("payload"), dict)
-        or not isinstance(record.get("task_keys"), list)
-        or not isinstance(record.get("created_at"), str)
-        or record.get("status") not in {"pending", "sent", "failed", "unknown", "expired"}
-        for record in data.values()
-    ):
+    if (not isinstance(data, dict)
+            or ("__cursor__" in data and (type(data["__cursor__"]) is not int or data["__cursor__"] < 0))
+            or any(not isinstance(record, dict) or not isinstance(record.get("payload"), dict)
+                   or not isinstance(record.get("task_keys"), list)
+                   or not isinstance(record.get("created_at"), str)
+                   or record.get("status") not in {"pending", "sent", "failed", "unknown", "expired"}
+                   for key, record in data.items() if key != "__cursor__")):
         raise ValueError("待对账记录损坏")
     return data
 
 
-def _prune_pending(pending: dict, today: date) -> None:
+def _prune_pending(pending: dict, today: date) -> bool:
     """仅清理 30 天前的已确认终态；未决事件不冒充已发。"""
     cutoff = (today - timedelta(days=30)).isoformat()
+    changed = False
     for event_id, record in list(pending.items()):
+        if event_id == "__cursor__":
+            continue
         if record["status"] in {"sent", "failed", "unknown", "expired"} and record["created_at"] < cutoff:
             pending.pop(event_id)
+            changed = True
+    return changed
 
 
 # ---------- 入口 ----------
@@ -562,7 +587,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         pending = _load_pending()
-        _prune_pending(pending, today)
+        if _prune_pending(pending, today) and not save_sent_json(PENDING_FILE, pending):
+            return 1
         reserved = {key for rec in pending.values() if isinstance(rec, dict)
                     for key in rec.get("task_keys", [])}
         for trig, items in groups:
