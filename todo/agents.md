@@ -20,6 +20,7 @@
 - `text`、`due`（YYYY-MM-DD）必填；没有 due 日期就问用户，不猜
 - `time`（HH:MM）用户给了时刻才填；**无 time 不提醒只存档**
 - `remind_min` 用户说"提前 N 分钟"才填
+- `time` 仍是到期时刻，`reminder_time` 由 worker 按提前量计算，绝不是开始时刻。internal 模式仅当用户明确给出独立开始时刻时才可写 `start_time`（HH:MM）和可选的 `start_date`（YYYY-MM-DD）；无明确开始时间就省略，不能把口语中的时间自行当成结构化开始时间。
 - `id` 不用写——worker 加载时对缺 id 条目自动补算（sha1(due|text) 稳定生成，同文同日天然防重）
 - `tags` 默认不加；用户明确要求分类时从 `modules/modules_data/todo/settings.json` 的 `tags_vocab` 选词，词表外的词不加
 
@@ -39,6 +40,7 @@
 - 文件名固定 `todo-YYYY-MM.md`（按任务 due 所在月份）；目录不存在则创建；当月文件已存在则**追加任务行**（不覆盖用户已有内容）
 - 任务行格式（Tasks 语法）：`- [ ] 任务文案 📅 YYYY-MM-DD ⏰ HH:MM`
 - 写后回读核对同上
+- vault 模式独立开始时刻的结构化标记尚待确定；现阶段只保留用户的原文，不增加第二个 `⏰` 或改写 `time` 的到期语义。
 - **不要写 `modules/modules_data/todo/tasks/` 目录**（那是 internal 数据源的文件）
 
 ## 勾选完成

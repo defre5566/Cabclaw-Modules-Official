@@ -21,6 +21,7 @@ from common import (  # noqa: E402
     shared_load,
     load_token,
     post_push,
+    probe_push_event,
     log_event,
 )
 from task import scan_md_tasks, parse_task_line  # noqa: E402  # Obsidian 私有解析器（模块自带）
@@ -29,6 +30,7 @@ from bridge.config import resolve_path  # noqa: E402
 MODULE_DIR = Path(__file__).resolve().parent          # modules/<name>/（代码）
 DATA_DIR = MODULE_DIR.parent / "modules_data" / "todo"  # modules/modules_data/<name>/（用户数据）
 SENT_FILE = DATA_DIR / "todo_sent.json"
+PENDING_FILE = DATA_DIR / "todo_pending.json"
 TASKS_DIR = DATA_DIR / "tasks"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 SCAN_CACHE_FILE = DATA_DIR / "scan_cache.json"
@@ -75,9 +77,11 @@ def _reminder_for_today(t: dict, today: date) -> tuple[str, str] | None:
         return None  # 无 time 不提醒（仅进共享层供查询）
     try:
         h, m = map(int, str(time_str).split(":"))
+        remind_min = int(t.get("remind_min") or 0)
+        if not (0 <= h < 24 and 0 <= m < 60 and 0 <= remind_min <= 1440):
+            return None
     except (ValueError, TypeError):
         return None
-    remind_min = int(t.get("remind_min") or 0)
     time_min = h * 60 + m
     crosses = remind_min > time_min
     target_due = today + timedelta(days=1 if crosses else 0)
@@ -114,12 +118,26 @@ def _norm_task(t: dict, today: date) -> dict | None:
         log_event("WARN", "todo", "bad_due", f"{t.get('id')}: {t.get('due')}")
         return None
     tid = str(t["id"]) if t.get("id") else hashlib.sha1(f"{due}|{t['text']}".encode()).hexdigest()[:8]
+    start_time = t.get("start_time")
+    if start_time is not None:
+        try:
+            start_time = datetime.strptime(str(start_time), "%H:%M").strftime("%H:%M")
+        except (TypeError, ValueError):
+            start_time = None
+    start_date = t.get("start_date")
+    if start_date is not None:
+        try:
+            start_date = date.fromisoformat(str(start_date)).isoformat()
+        except (TypeError, ValueError):
+            start_date = None
     r = _reminder_for_today(t, today)
     return {
         "id": tid,
         "text": str(t["text"]),
         "due": due,
         "time": t.get("time") or None,
+        "start_time": start_time,
+        "start_date": start_date if start_time else None,
         "remind_min": t.get("remind_min"),
         "done": bool(t.get("done", False)),
         "done_at": t.get("done_at") or None,   # 完成时间戳（ISO "YYYY-MM-DDTHH:MM:SS"；旧数据 None）
@@ -169,6 +187,8 @@ def _from_parsed(pt, today: date) -> dict:
         "text": pt.text,
         "due": due.isoformat(),
         "time": pt.time.strftime("%H:%M") if pt.time else None,
+        "start_time": None,
+        "start_date": None,
         "remind_min": pt.remind_min,
         "done": bool(pt.done_date),
         "done_at": pt.done_date.isoformat() if pt.done_date else None,  # vault 只有日期粒度
@@ -405,6 +425,98 @@ def refresh_shared(tasks: list[dict]) -> bool:
     return shared_save(SHARED_NAME, {"tasks": tasks})
 
 
+def _event_id(day: date, trigger: str, items: list[dict]) -> str:
+    """同一提醒时刻的同一组任务使用稳定业务键。"""
+    ids = "|".join(sorted(str(t["id"]) for t in items))
+    digest = hashlib.sha256(ids.encode("utf-8")).hexdigest()[:16]
+    return f"todo:{day:%Y%m%d}:{trigger.replace(':', '')}:{digest}"
+
+
+def _reminder_payload(day: date, trigger: str, items: list[dict]) -> dict:
+    """只传任务事实；到期时刻、提醒触发点、独立开始时刻彼此不替代。"""
+    facts = []
+    anchors = []
+    for t in items:
+        due = t["due"]
+        if t.get("repeat"):
+            hour, minute = map(int, str(t["time"]).split(":"))
+            due_day = day + timedelta(days=int(t.get("remind_min") or 0) > hour * 60 + minute)
+            due = due_day.isoformat()  # 加载期 repeat_due 已确认本轮的 target_due
+        item = {"id": str(t["id"]), "task": t["text"], "due_date": due,
+                "due_time": t.get("time"), "remind_min": t.get("remind_min"),
+                "reminder_date": t["reminder_date"], "reminder_time": trigger}
+        if t.get("start_time"):
+            item["start_time"] = t["start_time"]
+            if t.get("start_date"):
+                item["start_date"] = t["start_date"]
+        facts.append(item)
+        if len(t["text"]) <= 120:
+            anchors.append(t["text"])
+    return {"type": "reminder", "event_id": _event_id(day, trigger, items),
+            "facts": {"tasks": facts},
+            "intent": "用现有人设自然提醒这些任务，明确区分到期、提前提醒和用户明确写出的开始时刻。",
+            "must_preserve": list(dict.fromkeys(anchors))}
+
+
+def _reconcile_pending(pending: dict, sent: dict, token: str, today: date) -> bool:
+    """对账并投递已持久保存的业务事件；不可用时不换键重发。"""
+    ok = True
+    for event_id, record in list(pending.items()):
+        if not isinstance(record, dict) or not isinstance(record.get("payload"), dict):
+            continue
+        if record.get("status") in {"sent", "failed", "unknown"}:
+            continue
+        result = probe_push_event(event_id, token)
+        if result["status"] == "found":
+            status = result["state"]
+            if status == "sent":
+                for key in record["task_keys"]:
+                    sent[key] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if not save_sent_json(SENT_FILE, sent):
+                    ok = False
+                    continue
+            if status in {"sent", "failed", "unknown"}:
+                record["status"] = status
+                if not save_sent_json(PENDING_FILE, pending):
+                    ok = False
+            continue
+        if result["status"] == "missing":
+            if record["created_at"] < today.isoformat():
+                record["status"] = "expired"
+                if not save_sent_json(PENDING_FILE, pending):
+                    ok = False
+                continue  # 已过业务日，不能重新提交过期任务
+            if not post_push(record["payload"], token):
+                ok = False
+            continue
+        ok = False
+    return ok
+
+
+def _load_pending() -> dict:
+    """已存在而损坏的业务账本不可视为空，否则可能重新投递同一组任务。"""
+    if not PENDING_FILE.exists():
+        return {}
+    data = json.loads(PENDING_FILE.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or any(
+        not isinstance(record, dict) or not isinstance(record.get("payload"), dict)
+        or not isinstance(record.get("task_keys"), list)
+        or not isinstance(record.get("created_at"), str)
+        or record.get("status") not in {"pending", "sent", "failed", "unknown", "expired"}
+        for record in data.values()
+    ):
+        raise ValueError("待对账记录损坏")
+    return data
+
+
+def _prune_pending(pending: dict, today: date) -> None:
+    """仅清理 30 天前的已确认终态；未决事件不冒充已发。"""
+    cutoff = (today - timedelta(days=30)).isoformat()
+    for event_id, record in list(pending.items()):
+        if record["status"] in {"sent", "failed", "unknown", "expired"} and record["created_at"] < cutoff:
+            pending.pop(event_id)
+
+
 # ---------- 入口 ----------
 
 def main(argv: list[str] | None = None) -> int:
@@ -449,22 +561,27 @@ def main(argv: list[str] | None = None) -> int:
         return 0  # dry 零副作用：不推送/不写 sent/不刷 shared/不 prune
 
     try:
-        if groups:
-            text = "📌 待办提醒\n" + "\n".join(
-                f"⏰ {trig}：" + "；".join(t["text"] for t in items) for trig, items in groups
-            )
-            ok = post_push({"type": "reminder", "text": text}, load_token(MODULE_DIR))
-            if not ok:
-                log_event("WARN", "todo", "push_fail", "推送失败（未记防重，下次 tick 重试）")
-                return 1  # rc=1 → scheduler 感知（retry 60s×0 → 记日志下周期再试）
-            for _trig, items in groups:
-                for t in items:
-                    sent[f"{now.date()}|{t['id']}"] = now.strftime("%Y-%m-%d %H:%M:%S")
-            save_sent_json(SENT_FILE, sent)
+        pending = _load_pending()
+        _prune_pending(pending, today)
+        reserved = {key for rec in pending.values() if isinstance(rec, dict)
+                    for key in rec.get("task_keys", [])}
+        for trig, items in groups:
+            eligible = [t for t in items if f"{today}|{t['id']}" not in reserved]
+            for idx in range(0, len(eligible), 6):
+                batch = eligible[idx:idx + 6]
+                payload = _reminder_payload(today, trig, batch)
+                event_id = payload["event_id"]
+                pending[event_id] = {"payload": payload,
+                                     "task_keys": [f"{today}|{t['id']}" for t in batch],
+                                     "status": "pending", "created_at": today.isoformat()}
+                if not save_sent_json(PENDING_FILE, pending):
+                    log_event("ERROR", "todo", "pending_save_fail", "提醒业务键未能持久化，本轮未提交")
+                    return 1
+        result = _reconcile_pending(pending, sent, load_token(MODULE_DIR), today) if pending else True
         # 以本轮 worker 的业务日期修剪，避免测试/补跑指定日期时把当前防重键误删。
         prune_state_file(SENT_FILE, reference_date=today)
         refresh_shared(tasks)  # 每次运行刷新共享层（含无提醒时）
-        return 0
+        return 0 if result else 1
     except Exception as e:
         log_event("ERROR", "todo", "worker_error", str(e))
         return 1

@@ -9,6 +9,11 @@
         "hours": "8-21",
         "offset": "random-5-50"
       }
+    },
+    {
+      "id": "push-reconcile",
+      "every": "1m",
+      "args": ["--reconcile"]
     }
   ],
   "schedule_from_settings": [

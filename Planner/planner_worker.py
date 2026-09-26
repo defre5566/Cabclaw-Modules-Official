@@ -3,10 +3,9 @@
 调度：bridge scheduler 按 module.json 的 schedule（schedule_from_settings 联动生成）spawn，
 --phase morning|evening 区分阶段；失败 rc=1（scheduler 按 retry 配置补发）；--dry-run 零副作用。
 
-链路：worker 拼信息条目稿（零指令：事实/要点/信息性短语） → post_push(reminder)
-→ push_render 单轮渲染（tier 人设语气润色，禁工具、不增不漏） → 用户。
-agents.md 只服务入站交互（倒计时维护/查任务），不在推送链路上；素材零指令是硬约束
-（渲染器不执行加工指令，指令会被忽略或原样念出）。
+链路：worker 汇总早晚报事实并持久记录事件键 → post_push(reminder) →
+宿主按部署人设单轮渲染并发送文字；文字 sent 后再发送依赖的 HTML 原件。
+agents.md 只服务入站交互（倒计时维护/查任务），不在推送链路上。
 
 数据依赖（全部由数据可得性决定，非设置项）：
 - 任务：todo 的 shared/tasks.json（读到就读，读不到就没有）
@@ -20,6 +19,7 @@ from __future__ import annotations
 
 import sys
 import time
+import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -31,6 +31,7 @@ from common import (  # noqa: E402
     shared_load,
     load_token,
     post_push,
+    probe_push_event,
     log_event,
     get_weather,
     get_weather_snapshot,
@@ -48,6 +49,7 @@ MODULE_DIR = Path(__file__).resolve().parent          # modules/Planner/（代�
 DATA_DIR = MODULE_DIR.parent / "modules_data" / "Planner"  # 用户数据区
 MORNING_SENT = DATA_DIR / "morning_sent.json"
 EVENING_SENT = DATA_DIR / "evening_sent.json"
+PUSH_EVENTS = DATA_DIR / "push_events.json"
 COUNTDOWN_FILE = DATA_DIR / "countdown.json"
 BRIEFING_DIR = DATA_DIR / "briefing"
 
@@ -247,17 +249,6 @@ def _job_diagnosis() -> tuple[bool, str] | None:
         return None
 
 
-def _push_file_with_retry(path: Path, token: str) -> bool:
-    """简报原件 file 推送：重试 3 次（间隔 3s），全失败 False。"""
-    for attempt in range(3):
-        if post_push({"type": "file", "path": str(path)}, token):
-            return True
-        if attempt < 2:
-            time.sleep(3)
-    log_event("WARN", "Planner", "file_push_fail", f"重试 3 次失败: {path}")
-    return False
-
-
 def prune_briefing() -> None:
     """简报清理（规范.md L52）：>5 每5天清最旧5个；≤5（且>3）清3天前；≤3 不清。"""
     if not BRIEFING_DIR.is_dir():
@@ -361,7 +352,8 @@ def _greeting_head(today: date) -> str:
     if lunar.get("jieqi"):
         head += f"，今日节气：{lunar['jieqi']}"
     elif lunar.get("month") or lunar.get("day"):
-        head += f"，农历{lunar.get('month') or ''}{lunar.get('day') or ''}"
+        month = str(lunar.get("month") or "")
+        head += f"，农历{month}{'' if month.endswith('月') or not month else '月'}{lunar.get('day') or ''}"
     holiday = is_holiday(today)
     if holiday:
         head += f"，法定节假日：{holiday}"
@@ -468,10 +460,180 @@ def _closing_hint_evening(tasks: dict) -> str:
         return "收尾提示：肯定用户今天的完成情况，轻松收尾"
     return "收尾提示：关照用户好好休息"
 
+
+def _task_facts(items: list[dict]) -> list[dict]:
+    """把 shared 任务按明确字段传给宿主；不预写面向用户的段落。"""
+    return [{"task": str(t.get("text") or ""), "due": t.get("due"), "due_time": t.get("time"),
+             "start_time": t.get("start_time"), "start_date": t.get("start_date"),
+             "tags": list(t.get("tags") or [])}
+            for t in items]
+
+
+def _calendar_facts(today: date) -> dict:
+    lunar = get_lunar(today)
+    return {"business_date": today.isoformat(), "weekday": "一二三四五六日"[today.weekday()],
+            "address": _address(), "lunar_month": lunar.get("month"), "lunar_day": lunar.get("day"),
+            "jieqi": lunar.get("jieqi"), "holiday": is_holiday(today),
+            "fufu": get_fufu(today), "jiujiu": get_jiujiu(today)}
+
+
+def _report_payload(phase: str, today: date, tasks: dict, countdown: list[dict],
+                    settings: dict, settings_corrupt: bool, briefing: Path | None,
+                    note: str = "", swing: str | None = None) -> tuple[dict, dict | None]:
+    """早晚报事实和可选附件依赖，文字均交给主体按当前人设表达。"""
+    text_id = f"planner:{today.isoformat()}:{phase}"
+    facts = {"phase": phase, "calendar": _calendar_facts(today),
+             "weather": get_weather() if phase == "morning" else None,
+             "weather_alerts": weather_alerts() if phase == "morning" else [],
+             "local_data": _localdata_section(settings) if phase == "morning" else [],
+             "temp_swing": swing.split("，", 1)[0] if swing else None,
+             "countdowns": countdown,
+             "tasks_today": _task_facts(tasks["today"]),
+             "tasks_overdue": _task_facts(tasks["overdue"]),
+             "tasks_done_today": _task_facts(tasks["done_today"]),
+             "tasks_stale": _tasks_stale(), "settings_corrupt": settings_corrupt,
+             "briefing_note": note}
+    if len(json.dumps(facts, ensure_ascii=False)) > 14000:
+        raise ValueError("早晚报事实超出宿主单事件大小上限")
+    reminder = {"type": "reminder", "event_id": text_id, "facts": facts,
+                "intent": ("依当前部署人设写晨间早报，概述简报 1–2 条关键要点，"
+                           "保留有明确依据的天气、日程与任务，不朗读内部字段名。"
+                           if phase == "morning" else
+                           "依当前部署人设自然回顾今天的完成和待办，简要关照休息；"
+                           "简报若有当日产物，仅概述 1–2 条要点。"),
+                "must_preserve": []}
+    file_payload = None
+    if briefing:
+        reminder["context"] = {"html_path": str(briefing), "business_date": today.isoformat()}
+        file_payload = {"type": "file", "event_id": f"{text_id}:briefing",
+                        "path": str(briefing), "after_event_id": text_id}
+    return reminder, file_payload
+
+
+def _load_push_events() -> dict:
+    """推送业务账本损坏时失败关闭；不能当作空白重生成第二份早报。"""
+    if not PUSH_EVENTS.exists():
+        return {}
+    records = json.loads(PUSH_EVENTS.read_text(encoding="utf-8"))
+    if not isinstance(records, dict) or any(
+        not isinstance(value, dict) or not isinstance(value.get("reminder"), dict)
+        or value.get("phase") not in {"morning", "evening"}
+        for value in records.values()
+    ):
+        raise ValueError("早晚报推送账本损坏")
+    return records
+
+
+def _sync_event(ledger: dict, record: dict, today: date, token: str) -> bool:
+    """以同一事件键对账；失去 200 回执时仅明确 404 才重新提交。"""
+    phase = record["phase"]
+    text_id = record["reminder"]["event_id"]
+    result = probe_push_event(text_id, token)
+    if result["status"] == "unavailable":
+        return False
+    if result["status"] == "missing":
+        if record["business_date"] != today.isoformat():
+            record["text_state"] = "expired"
+            return save_sent_json(PUSH_EVENTS, ledger)
+        if not post_push(record["reminder"], token):
+            return False
+        record["text_state"] = "queued"
+        if not save_sent_json(PUSH_EVENTS, ledger):
+            return False
+    else:
+        record["text_state"] = result["state"]
+        if result["state"] == "sent":
+            sent_file = MORNING_SENT if phase == "morning" else EVENING_SENT
+            sent = load_sent_json(sent_file)
+            sent[record["business_date"]] = time.time()
+            sent.pop(f"{record['business_date']}|attempt", None)
+            if not save_sent_json(sent_file, sent):
+                return False
+        if not save_sent_json(PUSH_EVENTS, ledger):
+            return False
+    attachment = record.get("file")
+    if not attachment:
+        return True
+    file_id = attachment["event_id"]
+    file_result = probe_push_event(file_id, token)
+    if file_result["status"] == "unavailable":
+        return False
+    if file_result["status"] == "missing":
+        if record["text_state"] in {"failed", "unknown", "expired"}:
+            record["file_state"] = "blocked"
+        elif record["business_date"] != today.isoformat():
+            record["file_state"] = "expired"
+        else:
+            if not post_push(attachment, token):
+                return False
+            record["file_state"] = "queued"
+    else:
+        record["file_state"] = file_result["state"]
+        if file_result["state"] == "sent" and phase == "morning":
+            sent = load_sent_json(MORNING_SENT)
+            sent[f"{record['business_date']}|briefing"] = time.time()
+            if not save_sent_json(MORNING_SENT, sent):
+                return False
+    return save_sent_json(PUSH_EVENTS, ledger)
+
+
+def _reconcile_events(today: date) -> bool:
+    try:
+        ledger = _load_push_events()
+        if not ledger:
+            return True
+        token = load_token(MODULE_DIR)
+        ok = True
+        for event in ledger.values():
+            if event.get("text_state") in {"failed", "unknown", "expired"} and (
+                    not event.get("file") or event.get("file_state") in
+                    {"sent", "failed", "unknown", "expired", "blocked"}):
+                continue
+            if event.get("text_state") == "sent" and (
+                    not event.get("file") or event.get("file_state") in
+                    {"sent", "failed", "unknown", "expired", "blocked"}):
+                continue
+            if not _sync_event(ledger, event, today, token):
+                ok = False
+        return ok
+    except Exception as exc:
+        log_event("WARN", "Planner", "push_reconcile_fail", type(exc).__name__)
+        return False
+
+
+def _queue_report(phase: str, today: date, tasks: dict, countdown: list[dict],
+                  settings: dict, settings_corrupt: bool, briefing: Path | None,
+                  note: str = "", swing: str | None = None) -> int:
+    """先冻结业务事实，再提交；定时对账负责最终送达记账。"""
+    try:
+        ledger = _load_push_events()
+        slot = f"{today.isoformat()}:{phase}"
+        if slot not in ledger:
+            payload, file_payload = _report_payload(phase, today, tasks, countdown,
+                                                     settings, settings_corrupt, briefing, note, swing)
+            ledger[slot] = {"business_date": today.isoformat(), "phase": phase,
+                            "reminder": payload, "file": file_payload,
+                            "text_state": "pending", "file_state": "pending" if file_payload else None}
+            if not save_sent_json(PUSH_EVENTS, ledger):
+                return 1
+        return 0 if _sync_event(ledger, ledger[slot], today, load_token(MODULE_DIR)) else 1
+    except Exception as exc:
+        log_event("ERROR", "Planner", "report_push_fail", type(exc).__name__)
+        return 1
+
 def morning(today: date, dry: bool) -> int:
     sent = load_sent_json(MORNING_SENT)
     if not dry and sent.get(today.isoformat()):
         return 0
+    if not dry:
+        try:
+            ledger = _load_push_events()
+            record = ledger.get(f"{today.isoformat()}:morning")
+            if record:
+                return 0 if _sync_event(ledger, record, today, load_token(MODULE_DIR)) else 1
+        except Exception as exc:
+            log_event("ERROR", "Planner", "morning_reconcile_fail", type(exc).__name__)
+            return 1
     settings, settings_corrupt = _settings()
 
     tasks = collect_tasks(today)
@@ -510,76 +672,49 @@ def morning(today: date, dry: bool) -> int:
                 briefing_note = ("（信息简报今日未生成：任务已登记但等待多轮仍未就绪，"
                                  "可能是网络或检索故障，可在后台查看简报任务日志）")
 
-    # 段0 运维提示（配置异常时）
-    para0 = ["（系统提示：配置读取异常，本次按默认设置生成，请检查 settings.json）"] if settings_corrupt else []
-
-    # 段1 开场：问候历法 + 天气预警 + 温差 + 倒计时
-    para1 = [_greeting_head(today), *_weather_section()]
     swing = _temp_swing_note()
-    if swing:
-        para1.append(swing)
-    if countdown:
-        para1.append("倒计时：" + _countdown_lines(countdown) + "。")
-
-    # 段2 任务：逾期 + 今日待办
-    para2: list[str] = []
-    if tasks["overdue"]:
-        para2.append(f"已逾期 {len(tasks['overdue'])} 条，记得尽快处理：\n" + fmt_overdue(tasks["overdue"]))
-    if tasks["today"]:
-        para2.append(f"今天有 {len(tasks['today'])} 件事：\n" + fmt_tasks(tasks["today"]))
-    else:
-        para2.append("今天没有明确截止的待办。")
-    if _tasks_stale():
-        para2.append("（todo 数据未更新，以上任务可能不全）")
-
-    # 段3 简报：要点指示 / 未生成说明
-    para3: list[str] = []
-    if briefing:
-        para3.append(_briefing_section(briefing))
-    elif briefing_note:
-        para3.append(briefing_note)
-
-    # 段4 收尾：收尾提示（末行，渲染层按其方向结合素材生成一句收尾，不播报该行）
-    para4: list[str] = []
-    hint = _closing_hint_morning(tasks, countdown, swing)
-    if hint:
-        para4.append(hint)
-
-    text = "\n\n".join("\n".join(p) for p in (para0, para1, para2, para3, para4) if p)
-
     if dry:
+        # dry-run 人工检查可读概览，不进入宿主业务提醒载荷。
+        para0 = ["（系统提示：配置读取异常，本次按默认设置生成，请检查 settings.json）"] if settings_corrupt else []
+        para1 = [_greeting_head(today), *_weather_section()]
+        if swing:
+            para1.append(swing)
+        if countdown:
+            para1.append("倒计时：" + _countdown_lines(countdown) + "。")
+        para2: list[str] = []
+        if tasks["overdue"]:
+            para2.append(f"已逾期 {len(tasks['overdue'])} 条，记得尽快处理：\n" + fmt_overdue(tasks["overdue"]))
+        if tasks["today"]:
+            para2.append(f"今天有 {len(tasks['today'])} 件事：\n" + fmt_tasks(tasks["today"]))
+        else:
+            para2.append("今天没有明确截止的待办。")
+        if _tasks_stale():
+            para2.append("（todo 数据未更新，以上任务可能不全）")
+        para3 = [_briefing_section(briefing)] if briefing else ([briefing_note] if briefing_note else [])
+        hint = _closing_hint_morning(tasks, countdown, swing)
+        text = "\n\n".join("\n".join(p) for p in (para0, para1, para2, para3, [hint] if hint else []) if p)
         print(f"[Planner][dry] morning 素材:\n{text}")
         if briefing:
             print(f"[Planner][dry] 将发送简报文件: {briefing}")
         return 0
 
-    token = load_token(MODULE_DIR)
-    ok = post_push({"type": "reminder", "text": text}, token)
-
-    # 简报原件 file 双发（重试 3 次）；仍失败 → 早报补一句说明，不记已发（待补发兜底）
-    file_ok = True
-    if briefing:
-        file_ok = _push_file_with_retry(briefing, token)
-        if not file_ok:
-            post_push({"type": "reminder",
-                       "text": "（简报原件发送失败，请稍后在管理后台查看）"}, token)
-
-    if ok and file_ok:
-        sent[today.isoformat()] = time.time()
-        if briefing:
-            sent[f"{today.isoformat()}|briefing"] = time.time()  # 晚报兜底判定标记：简报已随早报送达
-        sent.pop(attempt_key, None)  # 等待计数使命完成
-        save_sent_json(MORNING_SENT, sent)
-        return 0
-
-    log_event("WARN", "Planner", "morning_push_fail", f"text={ok} file={file_ok}（不记已发，待补发）")
-    return 1
+    return _queue_report("morning", today, tasks, countdown, settings, settings_corrupt,
+                         briefing, briefing_note, swing)
 
 
 def evening(today: date, dry: bool) -> int:
     sent = load_sent_json(EVENING_SENT)
     if not dry and sent.get(today.isoformat()):
         return 0
+    if not dry:
+        try:
+            ledger = _load_push_events()
+            record = ledger.get(f"{today.isoformat()}:evening")
+            if record:
+                return 0 if _sync_event(ledger, record, today, load_token(MODULE_DIR)) else 1
+        except Exception as exc:
+            log_event("ERROR", "Planner", "evening_reconcile_fail", type(exc).__name__)
+            return 1
     settings, settings_corrupt = _settings()
 
     tasks = collect_tasks(today)
@@ -591,62 +726,34 @@ def evening(today: date, dry: bool) -> int:
     briefing = None
     if briefing_on:
         b = _today_briefing(today)
-        if b is not None and not load_sent_json(MORNING_SENT).get(f"{today.isoformat()}|briefing"):
+        morning_record = (_load_push_events().get(f"{today.isoformat()}:morning") if not dry else None)
+        if (b is not None and not load_sent_json(MORNING_SENT).get(f"{today.isoformat()}|briefing")
+                and not (morning_record and morning_record.get("file"))):
             briefing = b
 
-    # 段0 运维提示（配置异常时）
-    para0 = ["（系统提示：配置读取异常，本次按默认设置生成，请检查 settings.json）"] if settings_corrupt else []
-
-    # 段1 问候
-    para1 = [_evening_greeting()]
-
-    # 段2 任务：今日完成 + 未完成 + 倒计时
-    para2: list[str] = []
-    if tasks["done_today"]:
-        para2.append(f"今天完成 {len(tasks['done_today'])} 件：\n" + fmt_tasks(tasks["done_today"]))
-    else:
-        para2.append("今天还没有打勾完成的任务。")
-    if tasks["today"]:
-        para2.append(f"还有 {len(tasks['today'])} 件今日任务未完成：\n" + fmt_tasks(tasks["today"]))
-    else:
-        para2.append("今天到期的都办完了。")
-    if countdown:
-        para2.append("倒计时：" + _countdown_lines(countdown, due_today_phrase=False) + "。")
-
-    # 段3 简报兜底（早报时段未送达，晚报补发）
-    para3: list[str] = []
-    if briefing:
-        para3.append(_briefing_section(briefing, resend_note=True))
-
-    # 段4 收尾：晚间建议（内置池轮换）+ 收尾提示（末行）
-    para4 = [EVENING_TIPS[today.timetuple().tm_yday % len(EVENING_TIPS)]]
-    para4.append(_closing_hint_evening(tasks))
-
-    text = "\n\n".join("\n".join(p) for p in (para0, para1, para2, para3, para4) if p)
-
     if dry:
+        para0 = ["（系统提示：配置读取异常，本次按默认设置生成，请检查 settings.json）"] if settings_corrupt else []
+        para1 = [_evening_greeting()]
+        para2: list[str] = []
+        if tasks["done_today"]:
+            para2.append(f"今天完成 {len(tasks['done_today'])} 件：\n" + fmt_tasks(tasks["done_today"]))
+        else:
+            para2.append("今天还没有打勾完成的任务。")
+        if tasks["today"]:
+            para2.append(f"还有 {len(tasks['today'])} 件今日任务未完成：\n" + fmt_tasks(tasks["today"]))
+        else:
+            para2.append("今天到期的都办完了。")
+        if countdown:
+            para2.append("倒计时：" + _countdown_lines(countdown, due_today_phrase=False) + "。")
+        para3 = [_briefing_section(briefing, resend_note=True)] if briefing else []
+        para4 = [EVENING_TIPS[today.timetuple().tm_yday % len(EVENING_TIPS)], _closing_hint_evening(tasks)]
+        text = "\n\n".join("\n".join(p) for p in (para0, para1, para2, para3, para4) if p)
         print(f"[Planner][dry] evening 素材:\n{text}")
         if briefing:
             print(f"[Planner][dry] 将发送简报文件: {briefing}")
         return 0
 
-    token = load_token(MODULE_DIR)
-    ok = post_push({"type": "reminder", "text": text}, token)
-
-    file_ok = True
-    if briefing:
-        file_ok = _push_file_with_retry(briefing, token)
-        if not file_ok:
-            post_push({"type": "reminder",
-                       "text": "（简报原件发送失败，请稍后在管理后台查看）"}, token)
-
-    if ok and file_ok:
-        sent[today.isoformat()] = time.time()
-        save_sent_json(EVENING_SENT, sent)
-        return 0
-
-    log_event("WARN", "Planner", "evening_push_fail", "不记已发，待补发")
-    return 1
+    return _queue_report("evening", today, tasks, countdown, settings, settings_corrupt, briefing)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -658,6 +765,8 @@ def main(argv: list[str] | None = None) -> int:
         if i + 1 < len(argv):
             phase = argv[i + 1]
     today = date.today()
+    if "--reconcile" in argv:
+        return 0 if _reconcile_events(today) else 1
     if not dry:
         prune_state_file(MORNING_SENT)
         prune_state_file(EVENING_SENT)

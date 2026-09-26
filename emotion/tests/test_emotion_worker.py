@@ -31,12 +31,19 @@ except ImportError:
 @pytest.fixture
 def ew_env(tmp_path, monkeypatch):
     d = tmp_path / "emotion"
-    calls = {"push": [], "shared": []}
+    calls = {"push": [], "shared": [], "events": {}}
     monkeypatch.setattr(ew, "DATA_DIR", d)
     monkeypatch.setattr(ew, "STATE_FILE", d / "state.enc")
     monkeypatch.setattr(ew, "FEEDBACK_FILE", d / "feedback.enc")
     monkeypatch.setattr(ew, "SETTINGS_FILE", d / "settings.json")
-    monkeypatch.setattr(ew, "post_push", lambda payload, token: calls["push"].append(payload) or True)
+    def post_push(payload, token):
+        calls["push"].append(payload)
+        calls["events"][payload["event_id"]] = "queued"
+        return True
+    monkeypatch.setattr(ew, "post_push", post_push)
+    monkeypatch.setattr(ew, "probe_push_event", lambda event_id, token: (
+        {"status": "found", "state": calls["events"][event_id]}
+        if event_id in calls["events"] else {"status": "missing"}))
     monkeypatch.setattr(ew, "load_token", lambda m: "tok")
     monkeypatch.setattr(ew, "shared_save", lambda name, data: calls["shared"].append((name, data)) or True)
     monkeypatch.setattr(ew, "shared_load", lambda name, max_age=None: {"ts": 0, "tasks": []})
@@ -71,6 +78,10 @@ def test_window_care_topic_push(ew_env, monkeypatch):
     set_clock(ew, monkeypatch, datetime(2026, 9, 4, 8, 30))
     assert ew.main([]) == 0
     assert len(calls["push"]) == 1
+    s = read_state(ew)
+    assert s["daily_count"] == 0 and not s["dedup"]  # HTTP 200 只表示接受
+    calls["events"][calls["push"][0]["event_id"]] = "sent"
+    assert ew.main(["--reconcile"]) == 0
     s = read_state(ew)
     assert s["daily_count"] == 1
     assert f"2026-09-04|8" in s["dedup"]
@@ -123,6 +134,9 @@ def test_window_cross_day_reset(ew_env, monkeypatch):
     write_state(ew, {**ew._default_state(), "daily_date": "2026-09-04", "daily_count": 4})
     assert ew.main([]) == 0  # 昨天达上限，今天归零可推
     assert len(calls["push"]) == 1
+    assert read_state(ew)["daily_count"] == 0
+    calls["events"][calls["push"][0]["event_id"]] = "sent"
+    assert ew.main(["--reconcile"]) == 0
     assert read_state(ew)["daily_count"] == 1
 
 
@@ -142,8 +156,8 @@ def test_window_feedback_injected(ew_env, monkeypatch):
                                      "text": "感冒了", "tag": "sick",
                                      "expires_at": (datetime(2026, 9, 4, 8)).timestamp() + 3600}])
     assert ew.main([]) == 0
-    assert "用户此前反馈" in calls["push"][0]["text"]
-    assert "感冒了" in calls["push"][0]["text"]
+    assert calls["push"][0]["type"] == "reminder" and "text" not in calls["push"][0]
+    assert calls["push"][0]["facts"]["recent_feedback"][0]["text"] == "感冒了"
 
 
 def test_window_paused_blocks(ew_env, monkeypatch):
@@ -186,6 +200,10 @@ def test_phase_push_and_crossline_backoff(ew_env, monkeypatch):
                         lambda name, max_age=None: {"ts": 0, "tasks": [todo_task()]})
     assert ew.main(["--phase", "morning"]) == 0
     assert len(calls["push"]) == 1
+    s = read_state(ew)
+    assert "2026-09-04|morning" not in s["dedup"]
+    calls["events"][calls["push"][0]["event_id"]] = "sent"
+    assert ew.main(["--reconcile"]) == 0
     s = read_state(ew)
     assert "2026-09-04|morning" in s["dedup"]
     assert s["last_push_ts"] is not None  # 播报后拟人线退避
@@ -346,6 +364,45 @@ def test_dedup_pruned_2_days(ew_env, monkeypatch):
     s = ew._load_state(datetime(2026, 9, 5, 8, 30))
     assert "2026-09-03|8" not in s["dedup"]  # 只留最近 2 天
     assert "2026-09-05|8" in s["dedup"]
+
+
+def test_lost_post_receipt_probed_before_retry(ew_env, monkeypatch):
+    ew, calls = ew_env, ew_env.calls
+    set_clock(ew, monkeypatch, datetime(2026, 9, 4, 8, 30))
+
+    def lost(payload, token):
+        calls["push"].append(payload)
+        calls["events"][payload["event_id"]] = "queued"
+        return False
+
+    monkeypatch.setattr(ew, "post_push", lost)
+    assert ew.main([]) == 1
+    assert ew.main(["--reconcile"]) == 0
+    assert len(calls["push"]) == 1 and read_state(ew)["daily_count"] == 0
+
+
+def test_unknown_status_keeps_business_key_without_sent_counter(ew_env, monkeypatch):
+    ew, calls = ew_env, ew_env.calls
+    set_clock(ew, monkeypatch, datetime(2026, 9, 4, 8, 30))
+    assert ew.main([]) == 0
+    event_id = calls["push"][0]["event_id"]
+    calls["events"][event_id] = "unknown"
+    assert ew.main(["--reconcile"]) == 0
+    assert ew.main([]) == 0
+    assert len(calls["push"]) == 1
+    assert read_state(ew)["pending"][event_id]["status"] == "unknown"
+    assert read_state(ew)["daily_count"] == 0
+
+
+def test_phase_facts_never_send_internal_instructions(ew_env, monkeypatch):
+    ew, calls = ew_env, ew_env.calls
+    set_clock(ew, monkeypatch, datetime(2026, 9, 4, 9, 0))
+    monkeypatch.setattr(ew, "shared_load", lambda name, max_age=None: {"tasks": [todo_task()]})
+    assert ew.main(["--phase", "morning"]) == 0
+    payload = calls["push"][0]
+    assert payload["type"] == "reminder" and "text" not in payload
+    assert payload["facts"]["task_count"] == 1
+    assert "请给用户" not in json.dumps(payload, ensure_ascii=False)
 
 
 # ---------- 部署形态：裸 spawn（无 PYTHONPATH 注入） ----------

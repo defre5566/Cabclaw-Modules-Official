@@ -36,10 +36,20 @@ def _mk(tmp: Path):
     tw.TASKS_DIR = tmp / "tasks"
     tw.TASKS_DIR.mkdir()
     tw.SENT_FILE = tmp / "sent.json"
+    tw.PENDING_FILE = tmp / "pending.json"
+    tw.SETTINGS_FILE = tmp / "settings.json"
     tw.SCAN_CACHE_FILE = tmp / "scan_cache.json"
-    ctx = {"shared": []}
+    ctx = {"shared": [], "events": {}, "pushes": []}
     tw.shared_save = lambda name, data: (ctx["shared"].append((name, data)), True)[1]
-    tw.post_push = lambda body, token: True
+    def push(body, token):
+        ctx["pushes"].append(body)
+        if body.get("event_id"):
+            ctx["events"][body["event_id"]] = "queued"
+        return True
+    tw.post_push = push
+    tw.probe_push_event = lambda event_id, token: (
+        {"status": "found", "state": ctx["events"][event_id]}
+        if event_id in ctx["events"] else {"status": "missing"})
     tw.load_token = lambda d: "mock"
     return ctx
 
@@ -210,7 +220,16 @@ def test_run_refresh_shared_and_sent(monkeypatch):
     _write([_task("a", TODAY.isoformat(), "14:00")])
     _fixed_now(monkeypatch)
     assert tw.main([]) == 0
-    assert tw.SENT_FILE.exists()           # 记防重
+    assert not tw.SENT_FILE.exists()       # HTTP 200 仅接受，不记已发
+    pending = json.loads(tw.PENDING_FILE.read_text(encoding="utf-8"))
+    assert len(pending) == 1
+    event_id = next(iter(pending))
+    assert ctx["pushes"][0]["type"] == "reminder" and "text" not in ctx["pushes"][0]
+    assert ctx["pushes"][0]["facts"]["tasks"][0]["due_time"] == "14:00"
+    ctx["events"][event_id] = "sent"
+    assert tw.main([]) == 0
+    assert json.loads(tw.SENT_FILE.read_text(encoding="utf-8"))[f"{TODAY}|a"]
+    assert len(ctx["pushes"]) == 1          # 对账不重复 POST
     assert ctx["shared"] and ctx["shared"][-1][0] == "tasks"  # 刷共享
     assert any("tasks" in data for _, data in ctx["shared"])
 
@@ -441,3 +460,56 @@ def test_main_vault_mode_mismatch_dry_no_push(monkeypatch):
     assert tw.main(["--dry-run"]) == 0
     assert ctx["pushes"] == []
     assert not tw.SENT_FILE.exists()
+
+
+def test_fact_times_and_early_cross_day_repeat():
+    """到期、提前通知和明确开始是独立字段；跨日重复任务按实际业务日给宿主。"""
+    task = _task("x", (TODAY - timedelta(days=3)).isoformat(), "00:30", remind_min=60,
+                 repeat={"freq": "daily", "interval": 1}, start_time="22:00", start_date=TODAY.isoformat())
+    normal = tw._norm_task(task, TODAY)
+    payload = tw._reminder_payload(TODAY, "23:30", [normal])
+    fact = payload["facts"]["tasks"][0]
+    assert fact == {"id": "x", "task": "任务x", "due_date": TOMORROW.isoformat(),
+                    "due_time": "00:30", "remind_min": 60,
+                    "reminder_date": TODAY.isoformat(), "reminder_time": "23:30",
+                    "start_time": "22:00", "start_date": TODAY.isoformat()}
+    assert "text" not in payload and "任务x" in payload["must_preserve"]
+    without_start = tw._norm_task(_task("y", TODAY.isoformat(), "14:00"), TODAY)
+    assert "start_time" not in tw._reminder_payload(TODAY, "14:00", [without_start])["facts"]["tasks"][0]
+
+
+def test_post_receipt_lost_or_probe_unavailable_does_not_change_key(monkeypatch):
+    tmp = Path(tempfile.mkdtemp())
+    ctx = _mk(tmp)
+    _write([_task("a", TODAY.isoformat(), "14:00")])
+    _fixed_now(monkeypatch)
+    events = ctx["events"]
+    count = 0
+
+    def lost_receipt(payload, token):
+        nonlocal count
+        count += 1
+        events[payload["event_id"]] = "queued"
+        return False
+
+    tw.post_push = lost_receipt
+    assert tw.main([]) == 1
+    first_id = next(iter(json.loads(tw.PENDING_FILE.read_text(encoding="utf-8"))))
+    assert tw.main([]) == 0  # 下周期先 GET 找到，不重投变化后的素材
+    assert count == 1 and not tw.SENT_FILE.exists()
+    tw.probe_push_event = lambda *_: {"status": "unavailable"}
+    assert tw.main([]) == 1 and count == 1
+    assert next(iter(json.loads(tw.PENDING_FILE.read_text(encoding="utf-8")))) == first_id
+
+
+def test_failed_event_stays_terminal_no_new_key(monkeypatch):
+    tmp = Path(tempfile.mkdtemp())
+    ctx = _mk(tmp)
+    _write([_task("a", TODAY.isoformat(), "14:00")])
+    _fixed_now(monkeypatch)
+    assert tw.main([]) == 0
+    event_id = next(iter(ctx["events"]))
+    ctx["events"][event_id] = "unknown"
+    assert tw.main([]) == 0
+    assert json.loads(tw.PENDING_FILE.read_text(encoding="utf-8"))[event_id]["status"] == "unknown"
+    assert len(ctx["pushes"]) == 1 and not tw.SENT_FILE.exists()

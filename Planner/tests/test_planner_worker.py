@@ -42,10 +42,18 @@ def _mk(tmp: Path):
     pw.DATA_DIR.mkdir()
     pw.MORNING_SENT = pw.DATA_DIR / "morning_sent.json"
     pw.EVENING_SENT = pw.DATA_DIR / "evening_sent.json"
+    pw.PUSH_EVENTS = pw.DATA_DIR / "push_events.json"
     pw.COUNTDOWN_FILE = pw.DATA_DIR / "countdown.json"
     pw.BRIEFING_DIR = pw.DATA_DIR / "briefing"
-    ctx = {"pushes": []}
-    pw.post_push = lambda body, token: (ctx["pushes"].append((body, token)), True)[1]
+    ctx = {"pushes": [], "events": {}}
+    def post_push(body, token):
+        ctx["pushes"].append((body, token))
+        ctx["events"][body["event_id"]] = "queued"
+        return True
+    pw.post_push = post_push
+    pw.probe_push_event = lambda event_id, token: (
+        {"status": "found", "state": ctx["events"][event_id]}
+        if event_id in ctx["events"] else {"status": "missing"})
     pw.load_token = lambda d: "mock"
     pw.shared_load = lambda name: {"tasks": []}
     pw._settings = lambda: (dict(pw.DEFAULT_SETTINGS), False)
@@ -282,8 +290,14 @@ def test_main_run_writes_sent():
     ctx = _mk(tmp)
     _set_tasks(ctx, [_task("a", TODAY.isoformat())])
     assert pw.main(["--phase", "morning"]) == 0
+    assert not pw.MORNING_SENT.exists()  # 接受≠已发送
+    ctx["events"][f"planner:{TODAY}:morning"] = "sent"
+    assert pw.main(["--reconcile"]) == 0
     assert pw.MORNING_SENT.exists()
     assert pw.main(["--phase", "evening"]) == 0
+    assert not pw.EVENING_SENT.exists()
+    ctx["events"][f"planner:{TODAY}:evening"] = "sent"
+    assert pw.main(["--reconcile"]) == 0
     assert pw.EVENING_SENT.exists()
 
 
@@ -302,7 +316,7 @@ def test_today_briefing_exact_match():
 
 
 def test_morning_briefing_file_attach():
-    """briefing_on + 当天有产物 → 素材含简报段 + file 双发 + 防重。"""
+    """briefing_on + 当天有产物 → 提交事实与依赖文件，sent 前不记送达。"""
     tmp = Path(tempfile.mkdtemp())
     ctx = _mk(tmp)
     _set_tasks(ctx, [])
@@ -311,14 +325,20 @@ def test_morning_briefing_file_attach():
     pw._settings = lambda: ({**pw.DEFAULT_SETTINGS, "briefing_on": True}, False)
     assert pw.morning(TODAY, dry=False) == 0
     types = [b[0]["type"] for b in ctx["pushes"]]
-    assert types == ["reminder", "file"]           # 素材 + 原件双发
-    assert ctx["pushes"][0][0]["text"].find("信息简报") != -1
+    assert types == ["reminder", "file"]
+    reminder, file = [b[0] for b in ctx["pushes"]]
+    assert "text" not in reminder and reminder["context"]["business_date"] == TODAY.isoformat()
+    assert file["after_event_id"] == reminder["event_id"]
+    assert not pw.MORNING_SENT.exists()
+    ctx["events"][reminder["event_id"]] = "sent"
+    ctx["events"][file["event_id"]] = "sent"
+    assert pw.main(["--reconcile"]) == 0
     sent = json.loads(pw.MORNING_SENT.read_text(encoding="utf-8"))
-    assert sent.get(f"{TODAY.isoformat()}|briefing")      # 晚报兜底判定标记
+    assert sent.get(f"{TODAY.isoformat()}|briefing")
 
 
 def test_morning_briefing_file_fail_degraded():
-    """P7：file 双发重试 3 次仍失败 → 补发说明 reminder + 不记已发 + return 1。"""
+    """附件提交失败不自动换键、不另发素材说明；持续以同一 event_id 对账。"""
     tmp = Path(tempfile.mkdtemp())
     ctx = _mk(tmp)
     _set_tasks(ctx, [])
@@ -326,16 +346,21 @@ def test_morning_briefing_file_fail_degraded():
     briefing = pw.BRIEFING_DIR / f"{TODAY.isoformat()}.html"
     briefing.write_text("<html>简报</html>")
     pw._settings = lambda: ({**pw.DEFAULT_SETTINGS, "briefing_on": True}, False)
-    # reminder 成功 / file 失败；sleep 打桩防拖慢（重试 3 次每次 3s）
-    pw.time.sleep = lambda s: None
-    pw.post_push = lambda body, token: (
-        ctx["pushes"].append((body, token)), body.get("type") != "file")[1]
+    def submit(body, token):
+        ctx["pushes"].append((body, token))
+        if body["type"] == "reminder":
+            ctx["events"][body["event_id"]] = "queued"
+            return True
+        return False
+    pw.post_push = submit
     assert pw.morning(TODAY, dry=False) == 1       # file 失败 → rc=1
-    types = [b[0]["type"] for b in ctx["pushes"]]
-    assert types == ["reminder", "file", "file", "file", "reminder"]  # 素材 + 重试3次 + 补发说明
-    assert ctx["pushes"][-1][0]["text"].find("简报原件发送失败") != -1
-    assert ctx["pushes"][-1][0]["text"].find(str(briefing)) == -1     # 兜底说明不暴露部署路径
-    assert not pw.MORNING_SENT.exists()            # 不记已发（待补发兜底）
+    assert [b[0]["type"] for b in ctx["pushes"]] == ["reminder", "file"]
+    file_id = ctx["pushes"][1][0]["event_id"]
+    ctx["events"][file_id] = "unknown"
+    assert pw.main(["--reconcile"]) == 0
+    assert json.loads(pw.PUSH_EVENTS.read_text(encoding="utf-8"))[f"{TODAY}:morning"]["file_state"] == "unknown"
+    assert [b[0]["type"] for b in ctx["pushes"]] == ["reminder", "file"]
+    assert not pw.MORNING_SENT.exists()
 
 
 # ---------- dry 不被防重短路（防重只对真跑生效） ----------
@@ -345,7 +370,7 @@ def test_dry_morning_not_blocked_by_sent():
     tmp = Path(tempfile.mkdtemp())
     ctx = _mk(tmp)
     assert pw.morning(TODAY, dry=False) == 0
-    assert pw.MORNING_SENT.exists()
+    assert pw.PUSH_EVENTS.exists()
     ctx["pushes"] = []
     import io
     from contextlib import redirect_stdout
@@ -360,7 +385,7 @@ def test_dry_evening_not_blocked_by_sent():
     tmp = Path(tempfile.mkdtemp())
     ctx = _mk(tmp)
     assert pw.evening(TODAY, dry=False) == 0
-    assert pw.EVENING_SENT.exists()
+    assert pw.PUSH_EVENTS.exists()
     ctx["pushes"] = []
     import io
     from contextlib import redirect_stdout
@@ -422,7 +447,7 @@ def test_briefing_wait_registered_rc1():
 
 
 def test_briefing_wait_fallback_after_max():
-    """attempt 达上限（默认 retry.max=3）→ 保底发无简报早报 rc=0 + 记防重 + 清 attempt。"""
+    """attempt 达上限 → 提交无简报早报，sent 以后才清等待计数。"""
     tmp = Path(tempfile.mkdtemp())
     ctx = _mk(tmp)
     _briefing_env(ctx)
@@ -430,10 +455,10 @@ def test_briefing_wait_fallback_after_max():
     assert pw.morning(TODAY, dry=False) == 0
     types = [b[0]["type"] for b in ctx["pushes"]]
     assert types == ["reminder"]                      # 只发素材，无 file
-    assert "未生成" in ctx["pushes"][0][0]["text"]    # 保底标注
+    assert "未生成" in ctx["pushes"][0][0]["facts"]["briefing_note"]
     sent = json.loads(pw.MORNING_SENT.read_text(encoding="utf-8"))
-    assert sent.get(TODAY.isoformat())
-    assert not any(k.endswith("|attempt") for k in sent)
+    assert not sent.get(TODAY.isoformat())
+    assert any(k.endswith("|attempt") for k in sent)
 
 
 def test_briefing_unregistered_push_with_note():
@@ -444,9 +469,9 @@ def test_briefing_unregistered_push_with_note():
     pw.BRIEFING_DIR.mkdir(exist_ok=True)
     pw._job_diagnosis = lambda: (False, "模块数据区无 jobs 产物（无 job 声明或从未登记）")
     assert pw.morning(TODAY, dry=False) == 0
-    text = ctx["pushes"][0][0]["text"]
+    text = ctx["pushes"][0][0]["facts"]["briefing_note"]
     assert "未生成" in text and "无 jobs 产物" in text
-    assert json.loads(pw.MORNING_SENT.read_text(encoding="utf-8")).get(TODAY.isoformat())
+    assert not pw.MORNING_SENT.exists()
 
 
 def test_briefing_diag_unavailable_push():
@@ -457,7 +482,7 @@ def test_briefing_diag_unavailable_push():
     pw.BRIEFING_DIR.mkdir(exist_ok=True)
     pw._job_diagnosis = lambda: None
     assert pw.morning(TODAY, dry=False) == 0
-    assert "诊断不可用" in ctx["pushes"][0][0]["text"]
+    assert "诊断不可用" in ctx["pushes"][0][0]["facts"]["briefing_note"]
 
 
 # ---------- 晚报简报兜底 ----------
@@ -472,9 +497,9 @@ def test_evening_briefing_fallback_when_morning_missed():
     assert pw.evening(TODAY, dry=False) == 0
     types = [b[0]["type"] for b in ctx["pushes"]]
     assert types == ["reminder", "file"]
-    text = ctx["pushes"][0][0]["text"]
-    assert "信息简报" in text and "早报时段未送达" in text
-    assert "1-2 条" in text and "50 字" in text      # 数量约束防挑多
+    reminder, file = [body for body, _token in ctx["pushes"]]
+    assert reminder["context"]["html_path"].endswith(f"{TODAY}.html")
+    assert file["after_event_id"] == reminder["event_id"]
 
 
 def test_evening_briefing_skip_if_morning_had_it():
@@ -487,7 +512,53 @@ def test_evening_briefing_skip_if_morning_had_it():
     pw.MORNING_SENT.write_text(json.dumps({f"{TODAY.isoformat()}|briefing": 1.0}), encoding="utf-8")
     assert pw.evening(TODAY, dry=False) == 0
     assert all(b[0]["type"] == "reminder" for b in ctx["pushes"])
-    assert ctx["pushes"][0][0]["text"].find("信息简报") == -1
+    assert "context" not in ctx["pushes"][0][0]
+
+
+def test_same_business_key_probes_frozen_payload_after_lost_receipt():
+    """早报 POST 已接受但 200 回执丢失；下轮查询原键，不重新生成当天变化的天气。"""
+    tmp = Path(tempfile.mkdtemp())
+    ctx = _mk(tmp)
+    _set_tasks(ctx, [_task("a", TODAY.isoformat())])
+    push = pw.post_push
+
+    def lost_receipt(payload, token):
+        push(payload, token)
+        return False
+
+    pw.post_push = lost_receipt
+    assert pw.morning(TODAY, dry=False) == 1
+    event = ctx["pushes"][0][0]
+    assert event["event_id"] == f"planner:{TODAY}:morning"
+    pw.get_weather = lambda: "天气已变化"
+    assert pw.morning(TODAY, dry=False) == 0
+    assert len(ctx["pushes"]) == 1
+    ledger = json.loads(pw.PUSH_EVENTS.read_text(encoding="utf-8"))
+    assert ledger[f"{TODAY}:morning"]["reminder"] == event
+
+
+def test_file_uncertain_never_requeued_from_evening():
+    """晨报已经接受过附件，文件 unknown 后晚报不另发同一文件。"""
+    tmp = Path(tempfile.mkdtemp())
+    ctx = _mk(tmp)
+    pw._settings = lambda: ({**pw.DEFAULT_SETTINGS, "briefing_on": True}, False)
+    pw.BRIEFING_DIR.mkdir(exist_ok=True)
+    (pw.BRIEFING_DIR / f"{TODAY}.html").write_text("<html>合成</html>")
+    assert pw.morning(TODAY, dry=False) == 0
+    morning_text, morning_file = [body for body, _token in ctx["pushes"]]
+    ctx["events"][morning_text["event_id"]] = "sent"
+    ctx["events"][morning_file["event_id"]] = "unknown"
+    assert pw.main(["--reconcile"]) == 0
+    ctx["pushes"].clear()
+    assert pw.evening(TODAY, dry=False) == 0
+    assert [body["type"] for body, _token in ctx["pushes"]] == ["reminder"]
+
+
+def test_reconcile_before_report_event_does_not_create_report():
+    tmp = Path(tempfile.mkdtemp())
+    ctx = _mk(tmp)
+    assert pw.main(["--reconcile"]) == 0
+    assert ctx["pushes"] == [] and not pw.PUSH_EVENTS.exists()
 
 
 # ---------- 收尾提示（方向选择） ----------
