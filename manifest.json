@@ -3,7 +3,7 @@
   "modules": [
     {
       "name": "todo",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "purpose": "待办提醒：按到期时刻推送提醒，支持内置数据源与 Obsidian 库",
       "data_sources": [
         "internal",
@@ -22,11 +22,11 @@
       "requires": {
         "python": ">=3.12"
       },
-      "sha256": "824111b933efef46db5dc43776c3f82d55112543a5660f0c844ee189d7a5fc5e"
+      "sha256": "e9bebf647fc22831e2b9142b07174b96e6b5c58d0f3149fda999f75bab07587e"
     },
     {
       "name": "Planner",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "purpose": "早晚报聚合模块（晨间早报 + 晚间复盘）",
       "data_sources": [
         "shared"
@@ -41,16 +41,17 @@
         "directions.json",
         "job.template.json",
         "prompts/",
+        "templates/",
         "LICENSE"
       ],
       "requires": {
         "python": ">=3.12"
       },
-      "sha256": "94d1e1d16e8e9055e4a7f535e9b31985ce860fdc9485b01c7176d73a4f51da10"
+      "sha256": "bf4cf1f48a291d1ddc67b3a6439a13bac0a6224c0830263a8a0f1fd8be776b92"
     },
     {
       "name": "emotion",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "purpose": "拟人化主动关心（人设拓展）：时段问候/天气/倾听陪伴 + 任务三阶段轻量鼓励",
       "data_sources": [
         "internal",
@@ -68,7 +69,7 @@
       "requires": {
         "python": ">=3.12"
       },
-      "sha256": "981f6a878a0bf2c1d6c8ff3fec8336864e50eb41adb9371d5c2626717531a56f"
+      "sha256": "e056ce9dfd97a13d0ee09436f376b54c9b8c34636cb17f989e1c8642cbb53e31"
     },
     {
       "name": "Officetools",

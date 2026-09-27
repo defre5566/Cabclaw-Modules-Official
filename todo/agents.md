@@ -38,7 +38,8 @@
 ### Obsidian 模式（data_source = vault）
 
 - 写入位置：`settings.json` 的 `vault_task_dir`（绝对路径；**留空 = `<vault_path>/cabclaw-todo/`**）。写外部 vault 文件需遵守宿主 `write_file` 的权限确认，不经高危 Shell 绕过。
-- 文件名固定 `todo-YYYY-MM.md`（按 📅 日期所在月份）。新文件可在宿主权限确认通过后使用 `write_file` 创建；**已有文件暂不能用 `read_file` → 拼接 → `write_file` 模拟追加**：宿主读取有 8000 字截断，直接整份写回可能丢失原文件后半段，并发改动也会被覆盖。遇到已有文件先告知用户“当前缺少安全追加入口，尚未写入”，不要伪称已保存；待模块安全写入接线完成后再开放追加。
+- 文件名固定 `todo-YYYY-MM.md`（按 📅 日期所在月份）。
+- **追加与写入**：新文件直接调用 `write_file(path=..., content=...)` 创建；已有文件**必须使用追加模式**调用 `write_file(path=..., content=..., mode="append")` 将待办行追加至文件末尾（注意末尾换行）。严禁使用 `read_file` → 内存拼接 → `write_file(overwrite)` 模拟追加，以防长笔记并发覆写或截断丢失。若需查对历史待办，可用 `read_file(path=..., start_line=..., end_line=...)` 切片查验。
 - **未完成行固定顺序**：任务名称＋正文／补充 → `⏰` 时间 → `🔔` 提前提醒 → `#` 标签 → `📅` 日期（末尾）。字段缺失则省略，但不能变序；已有多个标签均在日期之前。例如：
 
   ```text
@@ -63,7 +64,8 @@
 ## Obsidian 模式补充（仅当用户明确在用 Obsidian 库）
 
 - 数据源切到 vault 后，任务写入位置见上文"写任务 → Obsidian 模式"（`vault_task_dir` / 默认 cabclaw-todo/）
-- 勾选完成 = 把 `- [ ]` 改成 `- [x]`，并在任务行尾追加 `✅ YYYY-MM-DD`（重复任务同理，其余字段顺序保持原样——下一次提醒依赖 Tasks 插件生成新行）；vault 模式任务文件读写用 Obsidian 语法，不要改 `modules/modules_data/todo/tasks/` 目录
+- 新增待办：新文件调用 `write_file` 创建；已有文件优先调用 `append_file(path=..., content=...)` 安全追加至末尾。
+- 勾选完成：**必须调用 `replace_file_content` 工具**进行就地原子替换，将待完成行（如 `- [ ] 任务名 ... 📅 YYYY-MM-DD`）精确替换为完成行（`- [x] 任务名 ... 📅 YYYY-MM-DD ✅ YYYY-MM-DD`）。**严禁使用覆盖写入，严禁调用 `run_command` 执行 Shell 脚本修改文件**；vault 模式任务文件读写用 Obsidian 语法，不要改 `modules/modules_data/todo/tasks/` 目录。
 
 ## 已知边界
 

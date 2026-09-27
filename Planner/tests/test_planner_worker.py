@@ -727,3 +727,33 @@ def test_fmt_overdue_due_inline():
     assert pw.fmt_overdue([t]) == "- 修路由器（8 月 28 日到期）"
     t2 = {"text": "x", "due": "bad-date", "time": "09:00", "tags": ["工作"]}
     assert pw.fmt_overdue([t2]) == "- x（bad-date 到期） ⏰ 09:00 #工作"
+
+
+# ---------- 简报响应式规范 ----------
+
+def test_briefing_prompt_and_demo_responsive_spec():
+    """验证 base.prompt.md 的移动端输出规范与 briefing_demo.html 参考样例合规。"""
+    prompt_path = MODULE_SRC / "prompts" / "base.prompt.md"
+    assert prompt_path.is_file(), "base.prompt.md 必须存在"
+    prompt_text = prompt_path.read_text(encoding="utf-8")
+
+    # Prompt 必须明确规范 viewport、暗色适配、卡片化布局与自包含
+    assert "viewport-fit=cover" in prompt_text
+    assert "prefers-color-scheme: dark" in prompt_text
+    assert "自包含" in prompt_text
+    assert "source-pill" in prompt_text
+    assert "item-quote" in prompt_text
+
+    demo_path = MODULE_SRC / "templates" / "briefing_demo.html"
+    assert demo_path.is_file(), "briefing_demo.html 样例文件必须存在"
+    demo_html = demo_path.read_text(encoding="utf-8")
+
+    # Demo 样例必须自包含，具备移动端与响应式核心指标，且无外链依赖
+    assert "<meta name=\"viewport\"" in demo_html
+    assert "prefers-color-scheme: dark" in demo_html
+    assert "<link rel=\"stylesheet\"" not in demo_html, "不得外链 CSS，必须自包含"
+    assert "<script" not in demo_html, "简报文档不得包含未审计脚本"
+    assert "source-pill" in demo_html
+    assert "item-quote" in demo_html
+
+
