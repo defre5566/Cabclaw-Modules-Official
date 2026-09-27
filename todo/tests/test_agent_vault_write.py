@@ -53,7 +53,7 @@ def test_native_agent_creates_new_file_in_isolated_vault(tmp_path):
     assert len(gate.prompts) == 1  # 真实用户 vault 在工作根之外仍受宿主写入确认门管理
 
 
-def test_long_existing_vault_file_must_not_be_rewritten_from_truncated_read(tmp_path):
+def test_long_existing_vault_file_append_safely(tmp_path):
     vault_file = tmp_path / "vault" / "cabclaw-todo" / "todo-2026-09.md"
     vault_file.parent.mkdir(parents=True)
     original = "- [ ] 原有笔记 📅 2026-09-28\n" + "x" * 8100 + "\n原始尾部仍在\n"
@@ -64,8 +64,22 @@ def test_long_existing_vault_file_must_not_be_rewritten_from_truncated_read(tmp_
             return True
 
     agent = NativeAgent(gate=AllowVault())
-    content = asyncio.run(agent._execute_tool("synthetic-conv", "read_file", {"path": str(vault_file)}))
-    assert len(original) > 8000 and "文件过长，已截断" in content
-    assert "原始尾部仍在" not in content
-    # 此分支只核对风险，不调用整份覆盖工具：用户原文件必须完整保留。
-    assert vault_file.read_text(encoding="utf-8") == original
+    # 宿主已放宽全量读取限制，能完整读出
+    full_content = asyncio.run(agent._execute_tool("synthetic-conv", "read_file", {"path": str(vault_file)}))
+    assert "原始尾部仍在" in full_content
+
+    # 通过 write_file(mode="append") 安全追加，不走整份覆写
+    new_line = format_task_line("追加新任务", "2026-09-29", at="14:00")
+    receipt = asyncio.run(agent._execute_tool("synthetic-conv", "write_file", {
+        "path": str(vault_file),
+        "content": new_line + "\n",
+        "mode": "append",
+    }))
+    assert "成功追加写入文件" in receipt
+
+    # 验证原文件前部、中间与尾部完全保留，且新任务成功追加在末尾
+    updated_content = vault_file.read_text(encoding="utf-8")
+    assert updated_content.startswith("- [ ] 原有笔记 📅 2026-09-28\n")
+    assert "原始尾部仍在\n" in updated_content
+    assert updated_content.endswith(new_line + "\n")
+
